@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Black Application</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="panel">
+    <div id="drag-strip"></div>
+
+    <div id="view-list">
+      <div id="list-scroll"></div>
+    </div>
+
+    <div id="view-terminal" class="hidden">
+      <div id="term-container"></div>
+    </div>
+
+    <div id="custom-context-menu" class="hidden">
+      <div class="menu-item" id="ctx-new-current">
+        <span class="menu-label" id="ctx-new-current-label">Open in New Window</span>
+      </div>
+      <div class="menu-item" id="ctx-back">
+        <span class="menu-label">← Back to Menu</span>
+      </div>
+      <div class="menu-item has-sub" id="ctx-open-other">
+        <span class="menu-label">Open Another CLI</span>
+        <span class="menu-arrow">▶</span>
+        <div id="ctx-sub-menu" class="sub-menu"></div>
+      </div>
+      <div class="menu-item" id="ctx-restart">
+        <span class="menu-label">Restart Session</span>
+      </div>
+      <div class="menu-separator"></div>
+      <div class="menu-item menu-danger" id="ctx-close">
+        <span class="menu-label">Close Window</span>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
+
+
+

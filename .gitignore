@@ -1,0 +1,27 @@
+﻿# Dependencies
+node_modules/
+app/node_modules/
+system/
+Sistem/
+
+# Python Virtual Environments & Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Build & Binaries
+bin/*.pdb
+bin/*.obj
+_install/
+
+# OS & Temp
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+.cache/
