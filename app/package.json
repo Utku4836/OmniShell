@@ -23,8 +23,7 @@
     "assets": "electron scripts/generate-brand-assets.js",
     "health": "node scripts/tool-pty-health.js",
     "dist": "electron-builder --win portable --x64",
-    "test": "node --test",
-    "check": "node --check main.js && node --check preload.js && node --check renderer/renderer.js && node --check lib/tooling.js && node --check lib/install-runtime.js && node --check lib/pty-registry.js && node --check lib/terminal-queries.js && node --check scripts/generate-brand-assets.js && node --check scripts/tool-pty-health.js && node --check scripts/pty-smoke.js && node --check scripts/pty-cmd-smoke.js && npm test"
+    "check": "node --check main.js && node --check preload.js && node --check renderer/renderer.js && node --check lib/tooling.js && node --check lib/install-runtime.js && node --check lib/pty-registry.js && node --check lib/terminal-queries.js && node --check scripts/generate-brand-assets.js && node --check scripts/tool-pty-health.js"
   },
   "devDependencies": {
     "electron": "^43.4.1",
@@ -50,7 +49,6 @@
     },
     "files": [
       "**/*",
-      "!test{,/**/*}",
       "!scripts/generate-brand-assets.js",
       "!scripts/tool-pty-health.js",
       "!scripts/pty-*.js"

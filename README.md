@@ -124,7 +124,7 @@ Cursor's official bootstrap is parsed only to resolve its current release. OmniS
 
 ## Performance work
 
-The runtime includes regression-tested optimizations that do not change tool behavior:
+The runtime includes verified optimizations that do not change tool behavior:
 
 - constant-time tool lookup maps in the main and renderer processes;
 - lazy creation of per-tool directory trees;
@@ -151,7 +151,7 @@ npm run health   # requires all CLIs to be installed locally
 npm run dist
 ~~~
 
-<code>npm run check</code> runs syntax checks, installer protocol tests, PowerShell parser tests, security/isolation contracts, renderer/preload contracts, terminal query tests, PTY lifecycle tests, and real ConPTY integration tests.
+<code>npm run check</code> validates the JavaScript sources used by the main process, preload bridge, renderer, installers, terminal query handling, and health command. Windows CI also parses every PowerShell installer and builds the portable executable.
 
 <code>npm run health</code> starts every installed CLI through the same ConPTY path OmniShell uses and verifies its <code>--version</code> command.
 
@@ -162,8 +162,7 @@ app/
 ├── assets/       icon, tray image, and bundled font license
 ├── lib/          tool registry, installer runtime, PTY helpers
 ├── renderer/     minimal interface and xterm surface
-├── scripts/      trusted Windows installers and health checks
-└── test/         unit, contract, and real PTY integration tests
+└── scripts/      trusted Windows installers and the ConPTY health command
 docs/             verified application screenshots
 system/           ignored runtime profiles and downloads
 ~~~

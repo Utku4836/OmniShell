@@ -31,3 +31,13 @@ jobs:
 
       - name: Run checks
         run: npm run check
+
+      - name: Validate PowerShell installers
+        shell: powershell
+        run: |
+          Get-ChildItem scripts\*.ps1 | ForEach-Object {
+            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_.FullName))
+          }
+
+      - name: Build portable executable
+        run: npm run dist
