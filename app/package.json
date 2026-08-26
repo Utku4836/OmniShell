@@ -1,17 +1,69 @@
 {
-  "name": "siyah-uygulama",
-  "version": "0.2.0",
+  "name": "omnishell",
+  "productName": "OmniShell",
+  "version": "0.3.0",
+  "description": "A fast Windows command center for isolated AI coding CLIs and real PTY sessions.",
+  "author": "Utku4836",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Utku4836/OmniShell.git"
+  },
+  "homepage": "https://github.com/Utku4836/OmniShell#readme",
+  "bugs": {
+    "url": "https://github.com/Utku4836/OmniShell/issues"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "assets": "electron scripts/generate-brand-assets.js",
+    "health": "node scripts/tool-pty-health.js",
+    "dist": "electron-builder --win portable --x64",
+    "check": "node --check main.js && node --check preload.js && node --check renderer/renderer.js && node --check lib/tooling.js && node --check lib/install-runtime.js && node --check lib/pty-registry.js && node --check lib/terminal-queries.js && node --check scripts/generate-brand-assets.js && node --check scripts/tool-pty-health.js"
   },
   "devDependencies": {
-    "electron": "^43.4.1"
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "node-pty": "^1.1.0"
+  },
+  "build": {
+    "appId": "dev.utku.omnishell",
+    "productName": "OmniShell",
+    "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/node-pty/**/*",
+      "scripts/**/*.ps1"
+    ],
+    "directories": {
+      "output": "../dist"
+    },
+    "files": [
+      "**/*",
+      "!scripts/generate-brand-assets.js",
+      "!scripts/tool-pty-health.js",
+      "!scripts/pty-*.js"
+    ],
+    "win": {
+      "icon": "assets/omnishell.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "OmniShell.exe"
+    }
   }
 }

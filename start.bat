@@ -1,7 +1,29 @@
 @echo off
+setlocal
 cd /d "%~dp0app"
-if not exist "node_modules" (
-  echo Ilk kurulum yapiliyor (npm install)...
-  call npm install
+
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo [OmniShell] Node.js 22 or newer is required.
+  echo Download it from https://nodejs.org/
+  pause
+  exit /b 1
 )
-start "" "node_modules\electron\dist\electron.exe" "."
+
+if not exist "node_modules" (
+  echo [OmniShell] Installing application dependencies...
+  call npm ci --no-fund --no-audit
+  if errorlevel 1 (
+    echo [OmniShell] Dependency installation failed.
+    pause
+    exit /b 1
+  )
+)
+
+if not exist "node_modules\electron\dist\electron.exe" (
+  echo [OmniShell] Electron is missing. Run npm ci inside the app folder.
+  pause
+  exit /b 1
+)
+
+start "OmniShell" "node_modules\electron\dist\electron.exe" "."
