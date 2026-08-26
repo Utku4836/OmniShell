@@ -2,50 +2,56 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Black Application</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>OmniShell</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="panel">
-    <div id="drag-strip"></div>
+    <main id="view-list">
+      <section class="brand-stage" aria-labelledby="brand-title">
+        <pre id="brand-title" class="brand-title" aria-label="OmniShell"> ██████╗ ███╗   ███╗███╗   ██╗██╗███████╗██╗  ██╗███████╗██╗     ██╗
+██╔═══██╗████╗ ████║████╗  ██║██║██╔════╝██║  ██║██╔════╝██║     ██║
+██║   ██║██╔████╔██║██╔██╗ ██║██║███████╗███████║█████╗  ██║     ██║
+██║   ██║██║╚██╔╝██║██║╚██╗██║██║╚════██║██╔══██║██╔══╝  ██║     ██║
+╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║███████║██║  ██║███████╗███████╗███████╗
+ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝</pre>
+      </section>
 
-    <div id="view-list">
-      <div id="list-scroll"></div>
-    </div>
+      <div class="main-divider" aria-hidden="true"></div>
 
-    <div id="view-terminal" class="hidden">
+      <section class="tool-deck" aria-label="Command-line tools">
+        <div id="list-scroll" role="listbox" aria-label="Command-line tools"></div>
+        <div id="deck-status" aria-live="polite">INITIALIZING LOCAL MATRIX</div>
+      </section>
+    </main>
+
+    <main id="view-terminal" class="hidden" aria-label="Terminal session">
       <div id="term-container"></div>
-    </div>
+    </main>
 
-    <div id="custom-context-menu" class="hidden">
-      <div class="menu-item" id="ctx-new-current">
-        <span class="menu-label" id="ctx-new-current-label">Open in New Window</span>
-      </div>
-      <div class="menu-item" id="ctx-back">
-        <span class="menu-label">← Back to Menu</span>
-      </div>
-      <div class="menu-item has-sub" id="ctx-open-other">
-        <span class="menu-label">Open Another CLI</span>
-        <span class="menu-arrow">▶</span>
-        <div id="ctx-sub-menu" class="sub-menu"></div>
-      </div>
-      <div class="menu-item" id="ctx-restart">
-        <span class="menu-label">Restart Session</span>
-      </div>
+    <div id="custom-context-menu" class="hidden" role="menu" aria-label="OmniShell actions">
+      <button class="menu-item" id="ctx-new-current" type="button" role="menuitem"><span id="ctx-new-current-label">Open CLI in New Window</span></button>
+      <button class="menu-item" id="ctx-back" type="button" role="menuitem">Back to Menu</button>
+      <button class="menu-item" id="ctx-restart" type="button" role="menuitem">Restart CLI</button>
+      <div class="menu-item has-sub" id="ctx-open-other" role="menuitem" tabindex="0" aria-haspopup="menu" aria-expanded="false"><span class="menu-label">Open Another CLI</span><span class="menu-arrow">›</span><div id="ctx-sub-menu" class="sub-menu" role="menu"></div></div>
+      <button class="menu-item" id="ctx-install" type="button" role="menuitem"><span id="ctx-install-label">Install CLI</span></button>
+      <button class="menu-item" id="ctx-cancel-install" type="button" role="menuitem">Cancel Installation</button>
+      <button class="menu-item" id="ctx-open-log" type="button" role="menuitem">Open Install Log</button>
       <div class="menu-separator"></div>
-      <div class="menu-item menu-danger" id="ctx-close">
-        <span class="menu-label">Close Window</span>
-      </div>
+      <button class="menu-item menu-danger" id="ctx-close" type="button" role="menuitem">Close OmniShell</button>
     </div>
 
+    <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+    <div id="boot-screen" aria-hidden="true"><span class="boot-o">O</span></div>
   </div>
 
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
-
-
-

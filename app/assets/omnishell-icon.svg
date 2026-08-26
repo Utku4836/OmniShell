@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+  </defs>
+  <rect width="512" height="512" rx="76" fill="#070707"/>
+  <rect x="16" y="16" width="480" height="480" rx="62" fill="#070707" stroke="#3b1d12" stroke-width="2"/>
+  <g fill="#ff6427" font-family="Cascadia Mono, Consolas, monospace" font-size="65" font-weight="700" text-anchor="middle">
+    <text x="256" y="117">██████╗</text>
+    <text x="256" y="181">██╔═══██╗</text>
+    <text x="256" y="245">██║   ██║</text>
+    <text x="256" y="309">██║   ██║</text>
+    <text x="256" y="373">╚██████╔╝</text>
+    <text x="256" y="437">╚═════╝</text>
+  </g>
+  <path d="M52 468H178M334 468H460" stroke="#3b1d12" stroke-width="2"/>
+</svg>

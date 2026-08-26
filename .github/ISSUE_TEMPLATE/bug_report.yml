@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible OmniShell problem.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Affected CLI
+      options:
+        - OmniShell interface
+        - Claude Code
+        - Codex
+        - OpenCode
+        - Antigravity CLI
+        - Aider
+        - GitHub Copilot CLI
+        - Cursor Agent
+        - Amp
+        - Goose
+        - Crush
+        - Qwen Code
+        - Continue CLI
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open OmniShell
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Remove API keys, tokens, account details, and private paths before pasting.
+      render: shell

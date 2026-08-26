@@ -4,20 +4,10 @@ app/node_modules/
 system/
 Sistem/
 
-# Python Virtual Environments & Cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-
-# Build & Binaries
-bin/*.pdb
-bin/*.obj
-_install/
+# Test and build output
+coverage/
+dist/
+out/
 
 # OS & Temp
 .DS_Store
@@ -25,3 +15,8 @@ Thumbs.db
 *.tmp
 *.log
 .cache/
+
+# Local agent history
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache*/

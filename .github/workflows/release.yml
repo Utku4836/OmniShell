@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: Verify source
+        run: npm run check
+
+      - name: Build portable executable
+        run: npm run dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/OmniShell.exe
