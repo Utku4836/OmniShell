@@ -69,7 +69,7 @@ const TOOLS = [
   },
   { id: 'crush', name: 'Crush', sigil: 'CR', accent: '#ff7597', summary: 'Charm terminal-native coding agent', category: 'ai', dir: 'Crush', bin: 'crush', installer: { type: 'npm', package: '@charmland/crush' } },
   { id: 'qwen', name: 'Qwen Code', sigil: 'QW', accent: '#a78bfa', summary: 'Qwen-powered open coding agent', category: 'ai', dir: 'QwenCode', bin: 'qwen', installer: { type: 'npm', package: '@qwen-code/qwen-code' } },
-  { id: 'continue', name: 'Continue CLI', sigil: 'CN', accent: '#8b9cff', summary: 'Open-source customizable coding agent', category: 'ai', dir: 'ContinueCLI', bin: 'cn', installer: { type: 'npm', package: '@continuedev/cli' } }
+  { id: 'kimi', name: 'Kimi Code', sigil: 'KI', accent: '#9a8cff', summary: 'Moonshot AI coding agent for the terminal', category: 'ai', dir: 'KimiCode', bin: 'kimi', installer: { type: 'npm', package: '@moonshot-ai/kimi-code' } }
 ]
 
 const TOOL_BY_ID = new Map(TOOLS.map((tool) => [tool.id, tool]))
@@ -235,10 +235,16 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
       CRUSH_GLOBAL_DATA: path.join(dataHome, 'crush')
     },
     qwen: { QWEN_CONFIG_DIR: path.join(root, '.qwen') },
-    continue: { CONTINUE_GLOBAL_DIR: path.join(root, '.continue') }
+    kimi: {}
   }
 
-  Object.assign(env, profiles[tool.id] || {})
+  const profileEnvironment = profiles[tool.id] || {}
+  Object.assign(env, profileEnvironment)
+  for (const [key, value] of Object.entries(profileEnvironment)) {
+    if (/(?:_HOME|_DIR)$/.test(key) && path.isAbsolute(value)) {
+      fs.mkdirSync(value, { recursive: true })
+    }
+  }
 
   const localBinDirectories = [path.join(root, 'node_modules', '.bin'), path.join(root, 'bin'), root]
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH'

@@ -54,7 +54,7 @@ The main surface uses the same ANSI Shadow lettering as the bundled icon. It has
 | [Goose](https://github.com/aaif-goose/goose) | Official Windows GitHub release | <code>goose</code> |
 | [Crush](https://github.com/charmbracelet/crush) | <code>@charmland/crush</code> | <code>crush</code> |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | <code>@qwen-code/qwen-code</code> | <code>qwen</code> |
-| [Continue CLI](https://github.com/continuedev/continue) | <code>@continuedev/cli</code> | <code>cn</code> |
+| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | <code>@moonshot-ai/kimi-code</code> | <code>kimi</code> |
 
 OmniShell installs the CLI programs, not their subscriptions or API access. Authentication still happens inside each tool.
 
@@ -67,7 +67,7 @@ Download **OmniShell.exe** from the [latest release](https://github.com/Utku4836
 
 ### Run from source
 
-Requirements: Windows 10/11 and Node.js 22 or newer.
+Requirements: Windows 10/11 and Node.js 22.19 or newer.
 
 ~~~powershell
 git clone https://github.com/Utku4836/OmniShell.git
@@ -101,8 +101,8 @@ system/
 │   └── Temp/
 ├── Codex/
 │   └── .codex/                Codex profile
-└── ContinueCLI/
-    └── .continue/             Continue profile
+└── KimiCode/
+    └── .kimi-code/            Kimi profile
 ~~~
 
 Provider secrets and global CLI profile variables are not copied into child environments. Aider also runs with Git discovery disabled in its empty profile, preventing it from finding and modifying OmniShell's parent repository.

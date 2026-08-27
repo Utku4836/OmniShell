@@ -44,6 +44,14 @@ button { font: inherit; }
   background: var(--surface);
 }
 
+#drag-region {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 8500;
+  height: 28px;
+  -webkit-app-region: drag;
+}
+
 #view-list {
   width: 100%;
   height: 100%;
@@ -246,6 +254,7 @@ button { font: inherit; }
   color: inherit;
   cursor: pointer;
   text-align: left;
+  -webkit-app-region: no-drag;
 }
 
 .menu-item:hover,
@@ -289,6 +298,7 @@ button { font: inherit; }
   padding: 5px 9px;
   text-align: left;
   white-space: nowrap;
+  -webkit-app-region: no-drag;
 }
 
 .sub-item span:first-child { color: var(--orange-dim); font-size: 10px; }
