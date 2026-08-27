@@ -32,7 +32,7 @@ body:
         - Goose
         - Crush
         - Qwen Code
-        - Continue CLI
+        - Kimi Code
         - Other
     validations:
       required: true

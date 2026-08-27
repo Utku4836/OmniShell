@@ -135,6 +135,7 @@ function createWindow(initialToolId = null) {
     transparent: false,
     backgroundColor: '#000000',
     icon: path.join(__dirname, 'assets', 'omnishell.ico'),
+    movable: true,
     resizable: true,
     hasShadow: true,
     show: false,
@@ -174,9 +175,6 @@ function createWindow(initialToolId = null) {
     } else {
       newWin.show()
     }
-    const display = screen.getDisplayMatching(newWin.getBounds())
-    newWin.setBounds(display.bounds)
-    if (!newWin.isFullScreen()) newWin.setFullScreen(true)
     if (!visualTestMode) newWin.focus()
   })
 
