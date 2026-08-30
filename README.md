@@ -15,19 +15,19 @@
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-070707?style=flat-square&logo=windows&logoColor=white" alt="Windows 10 and 11">
 </p>
 
-OmniShell installs, opens, and isolates popular coding agents behind a single keyboard-friendly interface. Each tool gets its own HOME, AppData, XDG directories, package cache, configuration, and installer log. Nothing silently falls back to a globally installed command.
+OmniShell installs, opens, and isolates popular coding agents behind a single keyboard-friendly interface. Every custom profile gets its own CLI runtime, HOME, AppData, XDG directories, credentials, caches, configuration, and neutral workspace. Nothing silently falls back to a globally installed command.
 
 ![OmniShell home screen](docs/omnishell-home.png)
 
 ## What it gives you
 
 - **One terminal surface:** Real ConPTY sessions rendered by xterm.js with GPU acceleration.
-- **Local tool installs:** Every command is resolved only from its own <code>system/&lt;Tool&gt;</code> directory.
-- **Explicit installation:** Click a missing CLI once to review the action, then click again to install.
+- **Local profile installs:** Every command is resolved only from the selected profile's own runtime directory.
+- **Explicit installation:** Select a missing CLI, then answer the inline <code>Install? YES NO</code> prompt.
 - **Visible progress:** Download stages and byte-based transfers render as a live <code>#</code> percentage bar.
-- **Separate profiles:** Tool credentials, caches, settings, and temporary files do not share HOME/AppData paths.
+- **Named profiles:** Create and rename fully isolated accounts; custom profiles install independent binary/runtime trees.
 - **Reliable Windows launch:** npm command wrappers, executable paths containing spaces, resize races, stale sessions, and process-tree cancellation are handled explicitly.
-- **Fast switching:** Arrow keys and Enter work from the main grid; right-click opens the current CLI in another window.
+- **Predictable windows:** Switch CLI stays in the current window; New Window first asks which profile to open, and auxiliary windows close instead of becoming duplicate main menus.
 - **Useful failures:** Install output is cleaned for the UI while the full transcript remains available locally.
 
 ## Interface
@@ -37,7 +37,7 @@ OmniShell installs, opens, and isolates popular coding agents behind a single ke
   <img src="docs/omnishell-terminal.png" width="49%" alt="Claude Code running inside OmniShell">
 </p>
 
-The main surface uses the same ANSI Shadow lettering as the bundled icon. It has no blurred glow or decorative HUD. The context menu shares the exact background, font, border, and accent tokens used by the main screen.
+The main surface uses the same ANSI Shadow lettering as the bundled icon. It has no blurred glow or decorative HUD. Selecting an installed CLI opens a compact profile picker where a named account can be opened, created, or renamed. The context menu shares the exact background, font, border, and accent tokens used by the main screen.
 
 ## Included CLIs
 
@@ -62,6 +62,8 @@ OmniShell installs the CLI programs, not their subscriptions or API access. Auth
 
 Download **OmniShell.exe** from the [latest release](https://github.com/Utku4836/OmniShell/releases/latest) and run it. It is a portable executable; there is no setup wizard and no system-wide tool installation.
 
+The release intentionally uses a larger, store-compressed portable package. The download is roughly 300–400 MB, but startup is much faster because Windows does not need to heavily decompress the Electron runtime on every cold launch.
+
 > [!NOTE]
 > Release binaries are currently unsigned. Windows SmartScreen may ask you to confirm the first launch.
 
@@ -82,11 +84,16 @@ The launcher installs the locked Electron dependencies on first run and then sta
 | Input | Action |
 |---|---|
 | Arrow keys or <code>J</code> / <code>K</code> | Move through the CLI grid |
-| <code>Enter</code> | Confirm install or open the selected CLI |
+| <code>Enter</code> | Confirm install or open the selected CLI's profile picker |
+| <code>N</code> / <code>R</code> in the profile picker | Create or rename a profile |
+| <code>I</code> in the profile picker | Install the selected profile's isolated CLI runtime |
 | <code>U</code> | Start update/reinstall for the selected CLI |
-| <code>Esc</code> | Return from a terminal to the main screen |
+| <code>Esc</code> | Pass through to the active CLI |
 | <code>Enter</code> after a CLI exits | Restart the same CLI |
+| <code>Ctrl+C</code> with a selection | Copy selected terminal text |
+| <code>Ctrl+V</code> or <code>Ctrl+Shift+V</code> | Paste text into the active PTY |
 | Right-click | Open the minimal action menu |
+| <code>Close &lt;CLI&gt;</code> in the terminal menu | Return to the main window, or close an auxiliary CLI window |
 | <code>Ctrl+Alt+S</code> | Hide or restore OmniShell |
 
 ## Isolation model
@@ -95,17 +102,27 @@ The launcher installs the locked Electron dependencies on first run and then sta
 system/
 ├── _install/
 │   └── logs/                  full installer transcripts
+├── _profiles/
+│   └── profiles.json          names mapped to stable profile IDs
 ├── ClaudeCode/
 │   ├── .claude/               Claude profile
 │   ├── node_modules/          local CLI package
 │   └── Temp/
 ├── Codex/
-│   └── .codex/                Codex profile
+│   ├── node_modules/          backward-compatible Default runtime
+│   ├── .codex/                backward-compatible Default profile
+│   └── profiles/
+│       └── p_<uuid>/
+│           ├── profile.json   readable name and layout descriptor
+│           ├── runtime/       independent CLI binary/package
+│           ├── .codex/        independent credentials/config
+│           ├── AppData/       independent Windows application data
+│           └── Temp/          independent temporary files
 └── KimiCode/
-    └── .kimi-code/            Kimi profile
+    └── .kimi-code/            Default Kimi profile
 ~~~
 
-Provider secrets and global CLI profile variables are not copied into child environments. Aider also runs with Git discovery disabled in its empty profile, preventing it from finding and modifying OmniShell's parent repository.
+Provider secrets and global CLI profile variables are not copied into child environments. Each profile starts in <code>%APPDATA%\OmniShell\workspaces\&lt;tool&gt;\&lt;profile&gt;</code>, outside the source/runtime tree, so a CLI does not accidentally inherit OmniShell's Git branch. Aider also runs with Git discovery disabled in its empty profile.
 
 > [!IMPORTANT]
 > Profile isolation is not an operating-system security sandbox. A launched CLI still runs with your Windows account permissions and can access files or the network when you direct it to do so.
@@ -115,10 +132,10 @@ Provider secrets and global CLI profile variables are not copied into child envi
 1. Build a trusted install plan from the static tool registry.
 2. Download into a <code>.partial</code> file when a remote asset is involved.
 3. Report real byte progress when the server exposes a content length.
-4. Keep one active installer per tool; other windows subscribe to the same job.
+4. Keep one active installer per tool/profile pair; other windows subscribe to that exact job.
 5. Verify the expected executable inside the isolated directory.
 6. Reject a zero exit code when the command is still missing.
-7. Preserve the complete log under <code>system/_install/logs/</code>.
+7. Preserve the complete profile-specific log under <code>system/_install/logs/</code>.
 
 Cursor's official bootstrap is parsed only to resolve its current release. OmniShell downloads and extracts the release itself, avoiding the bootstrap's user-PATH mutation.
 

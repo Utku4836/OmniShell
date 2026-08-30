@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, shell, webContents } = require('electron')
+const { app, BrowserWindow, Menu, Tray, clipboard, globalShortcut, ipcMain, screen, shell, webContents } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
@@ -16,21 +16,27 @@ const {
   createIsolatedEnvironment,
   findTool,
   prepareAllTools,
+  prepareProfileDirectories,
   prepareToolDirectories,
   resolveLocalExecutable,
   toolDir
 } = require('./lib/tooling')
+const { DEFAULT_PROFILE_ID, ProfileStore, validateProfileId } = require('./lib/profile-store')
 const { PtyRegistry } = require('./lib/pty-registry')
 const { collectTerminalResponses } = require('./lib/terminal-queries')
 const { createInstallReporter, findLatestInstallLogs, terminateProcessTree } = require('./lib/install-runtime')
 
 const windows = new Set()
-const ptyRegistry = new PtyRegistry()
-const windowInitialTools = new Map()
+const ptyRegistry = new PtyRegistry((proc) => {
+  if (process.platform === 'win32' && terminateProcessTree(proc)) return
+  proc.kill()
+})
+const windowInitialContexts = new Map()
 const installJobs = new Map()
 const installHistory = new Map()
 const sendTargets = new Map()
 const visualTestMode = process.env.OMNISHELL_VISUAL_TEST === '1'
+const profileStore = new ProfileStore(SYSTEM_ROOT)
 
 let tray = null
 let installHistoryLoaded = false
@@ -38,9 +44,64 @@ let installHistoryLoaded = false
 app.setName('OmniShell')
 app.setAppUserModelId('OmniShell')
 
+function roundedWindowShape(width, height, radius = 12) {
+  const safeRadius = Math.max(1, Math.min(radius, Math.floor(width / 2), Math.floor(height / 2)))
+  const rects = [{ x: 0, y: safeRadius, width, height: Math.max(1, height - (safeRadius * 2)) }]
+  for (let offset = 0; offset < safeRadius; offset += 1) {
+    const distance = safeRadius - offset - 0.5
+    const inset = Math.max(0, Math.ceil(safeRadius - Math.sqrt((safeRadius * safeRadius) - (distance * distance))))
+    const rowWidth = Math.max(1, width - (inset * 2))
+    rects.push({ x: inset, y: offset, width: rowWidth, height: 1 })
+    rects.push({ x: inset, y: height - offset - 1, width: rowWidth, height: 1 })
+  }
+  return rects
+}
+
+function applyWindowShape(targetWin) {
+  if (!targetWin || targetWin.isDestroyed()) return
+  const [width, height] = targetWin.getSize()
+  targetWin.setShape(roundedWindowShape(width, height))
+}
+
 function safeSend(senderId, channel, payload) {
   const target = sendTargets.get(senderId) || webContents.fromId(senderId)
   if (target && !target.isDestroyed()) target.send(channel, payload)
+}
+
+function profileInstallKey(toolId, profileId = DEFAULT_PROFILE_ID) {
+  validateProfileId(profileId)
+  return `${toolId}\u0000${profileId}`
+}
+
+function installLogId(toolId, profileId = DEFAULT_PROFILE_ID) {
+  validateProfileId(profileId)
+  return `${toolId}--${profileId}`
+}
+
+function profileWorkspaceDir(tool, profileId = DEFAULT_PROFILE_ID) {
+  validateProfileId(profileId)
+  const root = path.join(app.getPath('userData'), 'workspaces', tool.id, profileId)
+  fs.mkdirSync(root, { recursive: true })
+  return root
+}
+
+function profilesWithInstallState(tool, profiles) {
+  return profiles.map((profile) => ({
+    ...profile,
+    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id))
+  }))
+}
+
+function writeProfileDescriptor(tool, profile) {
+  if (!profile || profile.id === DEFAULT_PROFILE_ID) return
+  const root = prepareProfileDirectories(tool, profile.id)
+  fs.writeFileSync(path.join(root, 'profile.json'), JSON.stringify({
+    id: profile.id,
+    name: profile.name,
+    updatedAt: profile.updatedAt,
+    data: '.',
+    runtime: 'runtime'
+  }, null, 2), 'utf8')
 }
 
 function broadcastInstall(job, channel, payload) {
@@ -50,7 +111,11 @@ function broadcastInstall(job, channel, payload) {
 function loadInstallHistory() {
   if (installHistoryLoaded) return
   installHistoryLoaded = true
-  for (const [toolId, logPath] of findLatestInstallLogs(SYSTEM_ROOT)) installHistory.set(toolId, logPath)
+  for (const [logId, logPath] of findLatestInstallLogs(SYSTEM_ROOT)) {
+    const match = /^(.*)--(default|p_[0-9a-f]{32})$/.exec(logId)
+    if (match) installHistory.set(profileInstallKey(match[1], match[2]), logPath)
+    else installHistory.set(profileInstallKey(logId), logPath)
+  }
 }
 
 function flushInstallProgress(job) {
@@ -65,9 +130,10 @@ function flushInstallProgress(job) {
   broadcastInstall(job, 'install:progress', payload)
 }
 
-function queueInstallProgress(job, toolId, immediate = false) {
+function queueInstallProgress(job, immediate = false) {
   job.pendingProgress = {
-    toolId,
+    toolId: job.toolId,
+    profileId: job.profileId,
     line: job.lastLine,
     percent: job.percent,
     logAvailable: true
@@ -110,7 +176,7 @@ function queuePtyOutput(senderId, session, data) {
   }
 }
 
-function createWindow(initialToolId = null) {
+function createWindow(initialContext = null) {
   const parent = BrowserWindow.getFocusedWindow()
   let position = {}
   if (parent && !parent.isDestroyed()) {
@@ -133,11 +199,14 @@ function createWindow(initialToolId = null) {
     ...position,
     frame: false,
     transparent: false,
-    backgroundColor: '#000000',
+    backgroundColor: '#070707',
+    backgroundMaterial: 'none',
     icon: path.join(__dirname, 'assets', 'omnishell.ico'),
     movable: true,
     resizable: true,
-    hasShadow: true,
+    thickFrame: false,
+    roundedCorners: true,
+    hasShadow: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -150,11 +219,25 @@ function createWindow(initialToolId = null) {
 
   const webContentsId = newWin.webContents.id
   sendTargets.set(webContentsId, newWin.webContents)
-  if (initialToolId) {
-    windowInitialTools.set(webContentsId, initialToolId)
+  if (initialContext) {
+    const normalized = typeof initialContext === 'string'
+      ? { toolId: initialContext, profileId: null, auxiliary: false }
+      : {
+          toolId: initialContext.toolId,
+          profileId: initialContext.profileId || null,
+          auxiliary: Boolean(initialContext.auxiliary)
+        }
+    windowInitialContexts.set(webContentsId, normalized)
   }
 
   windows.add(newWin)
+  let shapeTimer = null
+  const scheduleShape = () => {
+    clearTimeout(shapeTimer)
+    shapeTimer = setTimeout(() => applyWindowShape(newWin), 16)
+  }
+  applyWindowShape(newWin)
+  newWin.on('resize', scheduleShape)
 
   newWin.webContents.on('did-fail-load', (e, code, desc) => {
     console.error(`[DID FAIL LOAD] ${code}: ${desc}`)
@@ -179,11 +262,12 @@ function createWindow(initialToolId = null) {
   })
 
   newWin.on('closed', () => {
+    clearTimeout(shapeTimer)
     killPtyForSender(webContentsId)
     for (const job of installJobs.values()) job.subscribers.delete(webContentsId)
     windows.delete(newWin)
     sendTargets.delete(webContentsId)
-    windowInitialTools.delete(webContentsId)
+    windowInitialContexts.delete(webContentsId)
   })
 
   return newWin
@@ -228,12 +312,13 @@ ipcMain.handle('tools:list', (event) => {
   loadInstallHistory()
   for (const job of installJobs.values()) job.subscribers.add(event.sender.id)
   return TOOLS.map((tool) => {
-    const job = installJobs.get(tool.id)
+    const job = installJobs.get(profileInstallKey(tool.id))
     return {
     id: tool.id,
     name: tool.name,
     sigil: tool.sigil,
     accent: tool.accent,
+    terminalBackground: tool.terminalBackground || '#000000',
     summary: tool.summary,
     category: tool.category,
     installable: Boolean(tool.installer),
@@ -242,24 +327,74 @@ ipcMain.handle('tools:list', (event) => {
     installed: Boolean(resolveLocalExecutable(tool)),
     installing: Boolean(job),
     installPercent: job?.percent || 0,
-    hasLog: Boolean(installHistory.get(tool.id)),
+    hasLog: Boolean(installHistory.get(profileInstallKey(tool.id))),
     source: tool.installer?.package || tool.installer?.url || tool.installer?.repo || 'manual setup',
     profile: toolDir(tool)
   }})
 })
 
-ipcMain.handle('window:get-initial-tool', (event) => {
-  return windowInitialTools.get(event.sender.id) || null
+ipcMain.handle('window:get-initial-context', (event) => {
+  return windowInitialContexts.get(event.sender.id) || null
 })
 
-ipcMain.handle('window:open-tool', (event, toolId) => {
+ipcMain.handle('window:open-tool', async (event, toolId, profileId = null) => {
   if (toolId === null || toolId === undefined) {
     createWindow()
     return { ok: true }
   }
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found' }
-  createWindow(toolId)
+  if (profileId !== null) {
+    const profile = await profileStore.get(tool.id, profileId)
+    if (!profile) return { ok: false, error: 'Profile not found' }
+    if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) {
+      return { ok: false, error: 'This profile does not have its own CLI installation yet' }
+    }
+  }
+  createWindow({ toolId: tool.id, profileId, auxiliary: profileId !== null })
+  return { ok: true }
+})
+
+ipcMain.handle('profiles:list', async (event, toolId) => {
+  const tool = findTool(toolId)
+  if (!tool) return { ok: false, error: 'Tool not found', profiles: [] }
+  return { ok: true, profiles: profilesWithInstallState(tool, await profileStore.list(tool.id)) }
+})
+
+ipcMain.handle('profiles:create', async (event, toolId, name) => {
+  const tool = findTool(toolId)
+  if (!tool) return { ok: false, error: 'Tool not found' }
+  try {
+    const profile = await profileStore.create(tool.id, name)
+    prepareProfileDirectories(tool, profile.id)
+    writeProfileDescriptor(tool, profile)
+    return { ok: true, profile: { ...profile, installed: false } }
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  }
+})
+
+ipcMain.handle('profiles:rename', async (event, toolId, profileId, name) => {
+  const tool = findTool(toolId)
+  if (!tool) return { ok: false, error: 'Tool not found' }
+  try {
+    const profile = await profileStore.rename(tool.id, profileId, name)
+    writeProfileDescriptor(tool, profile)
+    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) } }
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  }
+})
+
+ipcMain.handle('clipboard:read-text', () => {
+  return clipboard.readText().slice(0, 1024 * 1024)
+})
+
+ipcMain.handle('clipboard:write-text', (event, value) => {
+  if (typeof value !== 'string' || value.length > 1024 * 1024) {
+    return { ok: false, error: 'Clipboard text is invalid or too large' }
+  }
+  clipboard.writeText(value)
   return { ok: true }
 })
 
@@ -270,23 +405,49 @@ ipcMain.on('win:close', (event) => {
   }
 })
 
-ipcMain.handle('tool:open-folder', async (event, id, kind = 'profile') => {
+ipcMain.handle('win:get-bounds', (event) => {
+  const targetWin = BrowserWindow.fromWebContents(event.sender)
+  return targetWin && !targetWin.isDestroyed() ? targetWin.getBounds() : null
+})
+
+ipcMain.on('win:set-bounds', (event, requestedBounds) => {
+  const targetWin = BrowserWindow.fromWebContents(event.sender)
+  if (!targetWin || targetWin.isDestroyed() || !requestedBounds || typeof requestedBounds !== 'object') return
+  const current = targetWin.getBounds()
+  const display = screen.getDisplayMatching(current)
+  const workArea = display.workArea
+  const width = Math.max(480, Math.min(workArea.width, Math.round(Number(requestedBounds.width) || current.width)))
+  const height = Math.max(340, Math.min(workArea.height, Math.round(Number(requestedBounds.height) || current.height)))
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, Math.round(Number(requestedBounds.x) || current.x)))
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, Math.round(Number(requestedBounds.y) || current.y)))
+  targetWin.setSize(width, height, false)
+  targetWin.setPosition(x, y, false)
+  applyWindowShape(targetWin)
+})
+
+ipcMain.handle('tool:open-folder', async (event, id, kind = 'profile', profileId = DEFAULT_PROFILE_ID) => {
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
   loadInstallHistory()
-  const logPath = installHistory.get(id)
+  const logPath = installHistory.get(profileInstallKey(id, profileId))
   if (kind === 'log' && !logPath) return { ok: false, error: 'No installation log is available in this session' }
-  const target = kind === 'log' ? path.dirname(logPath) : prepareToolDirectories(tool)
+  if (kind === 'profile' && !await profileStore.get(tool.id, profileId)) {
+    return { ok: false, error: 'Profile not found' }
+  }
+  const target = kind === 'log'
+    ? path.dirname(logPath)
+    : prepareProfileDirectories(tool, profileId)
   if (!fs.existsSync(target)) return { ok: false, error: 'Folder not found' }
   const error = await shell.openPath(target)
   return error ? { ok: false, error } : { ok: true }
 })
 
-ipcMain.handle('tool:check', (event, id) => {
+ipcMain.handle('tool:check', (event, id, profileId = DEFAULT_PROFILE_ID) => {
   const tool = findTool(id)
   if (!tool) return { installed: false, error: 'Tool not found' }
+  try { validateProfileId(profileId) } catch (error) { return { installed: false, error: error.message } }
 
-  const executable = resolveLocalExecutable(tool)
+  const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profileId)
   return {
     installed: Boolean(executable),
     isLocal: Boolean(executable),
@@ -295,13 +456,22 @@ ipcMain.handle('tool:check', (event, id) => {
   }
 })
 
-ipcMain.handle('tool:install', (event, id) => {
+ipcMain.handle('tool:install', async (event, id, profileId = DEFAULT_PROFILE_ID) => {
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
+  let profile
+  try {
+    profile = await profileStore.get(tool.id, profileId)
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  }
+  if (!profile) return { ok: false, error: 'Profile not found' }
+  const jobKey = profileInstallKey(tool.id, profile.id)
 
   if (!tool.installer) {
     safeSend(event.sender.id, 'install:done', {
       toolId: tool.id,
+      profileId: profile.id,
       ok: false,
       manual: true,
       hint: tool.hint || 'This tool requires manual installation.'
@@ -309,11 +479,12 @@ ipcMain.handle('tool:install', (event, id) => {
     return { ok: false, manual: true }
   }
 
-  const existingJob = installJobs.get(tool.id)
+  const existingJob = installJobs.get(jobKey)
   if (existingJob) {
     existingJob.subscribers.add(event.sender.id)
     safeSend(event.sender.id, 'install:progress', {
       toolId: tool.id,
+      profileId: profile.id,
       line: existingJob.lastLine || `Installing ${tool.name}...`,
       percent: existingJob.percent,
       logAvailable: true
@@ -321,13 +492,13 @@ ipcMain.handle('tool:install', (event, id) => {
     return { ok: true, joined: true }
   }
 
-  const plan = createInstallPlan(tool, __dirname)
+  const plan = createInstallPlan(tool, __dirname, SYSTEM_ROOT, profile.id)
   if (!plan) return { ok: false, error: 'No installer is configured for this tool' }
 
   let reporter
   try {
-    reporter = createInstallReporter(tool, SYSTEM_ROOT)
-    installHistory.set(tool.id, reporter.logPath)
+    reporter = createInstallReporter({ ...tool, id: installLogId(tool.id, profile.id), name: `${tool.name} / ${profile.name}` }, SYSTEM_ROOT)
+    installHistory.set(jobKey, reporter.logPath)
   } catch (error) {
     return { ok: false, error: `Installer log could not be created: ${error.message}` }
   }
@@ -336,16 +507,19 @@ ipcMain.handle('tool:install', (event, id) => {
   try {
     proc = spawn(plan.command, plan.args, {
       cwd: plan.cwd,
-      env: createInstallEnvironment(tool),
+      env: createInstallEnvironment(tool, process.env, SYSTEM_ROOT, profile.id),
       windowsHide: true
     })
   } catch (error) {
     reporter.feed('error', error.message)
     reporter.finish('failed to start')
-    installHistory.set(tool.id, reporter.logPath)
+    installHistory.set(jobKey, reporter.logPath)
     return { ok: false, error: `Installer could not start: ${error.message}` }
   }
   const job = {
+    key: jobKey,
+    toolId: tool.id,
+    profileId: profile.id,
     proc,
     reporter,
     subscribers: new Set([event.sender.id]),
@@ -357,14 +531,14 @@ ipcMain.handle('tool:install', (event, id) => {
     progressTimer: null,
     lastProgressSignature: ''
   }
-  installJobs.set(tool.id, job)
+  installJobs.set(jobKey, job)
 
-  queueInstallProgress(job, tool.id, true)
+  queueInstallProgress(job, true)
 
   const feed = (streamName, chunk) => {
     job.lastLine = reporter.feed(streamName, chunk) || job.lastLine
     job.percent = Math.max(job.percent, reporter.progress, inferInstallPercent(tool, job.lastLine, job.percent))
-    queueInstallProgress(job, tool.id)
+    queueInstallProgress(job)
   }
 
   proc.stdout.on('data', (chunk) => feed('stdout', chunk))
@@ -375,17 +549,18 @@ ipcMain.handle('tool:install', (event, id) => {
     if (ok) {
       job.percent = 100
       job.lastLine = `${tool.name} installed and verified`
-      queueInstallProgress(job, tool.id, true)
+      queueInstallProgress(job, true)
     } else {
       clearTimeout(job.progressTimer)
       job.progressTimer = null
     }
     job.settled = true
-    installJobs.delete(tool.id)
-    installHistory.set(tool.id, reporter.logPath)
+    installJobs.delete(jobKey)
+    installHistory.set(jobKey, reporter.logPath)
     reporter.finish(ok ? 'success' : (job.cancelled ? 'cancelled' : 'failed'))
     broadcastInstall(job, 'install:done', {
       toolId: tool.id,
+      profileId: profile.id,
       ok,
       cancelled: job.cancelled,
       error: reporter.failure(error || job.lastLine),
@@ -395,7 +570,7 @@ ipcMain.handle('tool:install', (event, id) => {
 
   proc.on('error', (error) => finish(false, error.message))
   proc.on('close', (code) => {
-    const executable = resolveLocalExecutable(tool)
+    const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
     if (job.cancelled) {
       finish(false, 'Installation cancelled.')
       return
@@ -406,12 +581,14 @@ ipcMain.handle('tool:install', (event, id) => {
   return { ok: true, joined: false }
 })
 
-ipcMain.handle('tool:cancel-install', (event, id) => {
-  const job = installJobs.get(id)
+ipcMain.handle('tool:cancel-install', (event, id, profileId = DEFAULT_PROFILE_ID) => {
+  let jobKey
+  try { jobKey = profileInstallKey(id, profileId) } catch (error) { return { ok: false, error: error.message } }
+  const job = installJobs.get(jobKey)
   if (!job) return { ok: false, error: 'No active installer was found' }
   job.cancelled = true
   job.lastLine = 'Cancelling installation...'
-  queueInstallProgress(job, id, true)
+  queueInstallProgress(job, true)
   terminateProcessTree(job.proc)
   return { ok: true }
 })
@@ -421,25 +598,32 @@ ipcMain.handle('terminal:stop', (event) => {
   return { ok: true }
 })
 
-ipcMain.handle('terminal:start', async (event, id, cols, rows, pixelWidth, pixelHeight) => {
+ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_ID, cols, rows, pixelWidth, pixelHeight) => {
+  const senderId = event.sender.id
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
+  const profile = await profileStore.get(tool.id, profileId)
+  if (!profile) return { ok: false, error: 'Profile not found' }
 
-  killPtyForSender(event.sender.id)
+  killPtyForSender(senderId)
 
-  const cwd = toolDir(tool)
-  fs.mkdirSync(cwd, { recursive: true })
+  prepareProfileDirectories(tool, profile.id)
+  const cwd = profileWorkspaceDir(tool, profile.id)
 
   const startCols = Number.isInteger(cols) ? Math.max(11, Math.min(cols, 1000)) : 90
   const startRows = Number.isInteger(rows) ? Math.max(6, Math.min(rows, 500)) : 28
   const startPixelWidth = Number.isInteger(pixelWidth) ? Math.max(1, Math.min(pixelWidth, 16384)) : startCols * 9
   const startPixelHeight = Number.isInteger(pixelHeight) ? Math.max(1, Math.min(pixelHeight, 16384)) : startRows * 18
-  let launchExe = resolveLocalExecutable(tool)
+  let launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
   if (!launchExe) return { ok: false, error: 'The isolated local installation was not found' }
 
   try {
     const pty = require('node-pty')
-    const ptyEnv = createIsolatedEnvironment(tool)
+    const ptyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile.id)
+    ptyEnv.PWD = cwd
+    ptyEnv.INIT_CWD = cwd
+    ptyEnv.GIT_CEILING_DIRECTORIES = path.join(app.getPath('userData'), 'workspaces')
+    ptyEnv.OMNISHELL_PROFILE_WORKSPACE = cwd
     let launchArgs = []
 
     const spawnOpts = {
@@ -464,42 +648,64 @@ ipcMain.handle('terminal:start', async (event, id, cols, rows, pixelWidth, pixel
       return { ok: false, error: 'The isolated executable disappeared before launch' }
     }
 
-    const session = {
-      id: randomUUID(),
-      proc: ptyProc,
-      cols: startCols,
-      rows: startRows,
-      queryBuffer: '',
-      outputBuffer: '',
-      outputTimer: null
-    }
-    ptyRegistry.replace(event.sender.id, session)
+    let session = null
+    const earlyData = []
+    let earlyExit = null
 
-    ptyProc.onData((data) => {
-      if (ptyRegistry.get(event.sender.id) !== session) return
+    const handleData = (data) => {
+      if (!session || ptyRegistry.get(senderId) !== session) return
       const queryResult = collectTerminalResponses(
         session.queryBuffer,
         data,
         session.cols,
         session.rows,
         session.pixelWidth,
-        session.pixelHeight
+        session.pixelHeight,
+        { background: session.terminalBackground }
       )
       session.queryBuffer = queryResult.buffer
       for (const response of queryResult.responses) {
         try { ptyProc.write(response) } catch (error) {}
       }
-      queuePtyOutput(event.sender.id, session, data)
-    })
+      queuePtyOutput(senderId, session, data)
+    }
 
-    ptyProc.onExit(({ exitCode }) => {
-      flushPtyOutput(event.sender.id, session)
-      if (ptyRegistry.deleteIfCurrent(event.sender.id, session)) {
-        safeSend(event.sender.id, 'pty:exit', { sessionId: session.id, exitCode })
+    const handleExit = ({ exitCode }) => {
+      if (!session) {
+        earlyExit = { exitCode }
+        return
       }
-    })
+      flushPtyOutput(senderId, session)
+      if (ptyRegistry.deleteIfCurrent(senderId, session)) {
+        safeSend(senderId, 'pty:exit', { sessionId: session.id, exitCode })
+      }
+    }
 
-    return { ok: true, sessionId: session.id }
+    ptyProc.onData((data) => {
+      if (!session) earlyData.push(data)
+      else handleData(data)
+    })
+    ptyProc.onExit(handleExit)
+
+    session = {
+      id: randomUUID(),
+      toolId: tool.id,
+      profileId: profile.id,
+      terminalBackground: (tool.terminalBackground || '#000000').replace('#', ''),
+      proc: ptyProc,
+      cols: startCols,
+      rows: startRows,
+      pixelWidth: startPixelWidth,
+      pixelHeight: startPixelHeight,
+      queryBuffer: '',
+      outputBuffer: '',
+      outputTimer: null
+    }
+    ptyRegistry.replace(senderId, session)
+    for (const data of earlyData) handleData(data)
+    if (earlyExit) handleExit(earlyExit)
+
+    return { ok: true, sessionId: session.id, profile }
   } catch (err) {
     return { ok: false, error: String(err.message || err) }
   }
@@ -544,9 +750,18 @@ if (!hasSingleInstanceLock) {
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return
   prepareAllTools()
-  loadInstallHistory()
+  profileStore.ensureTools(TOOLS.map((tool) => tool.id))
+    .then((profilesByTool) => {
+      for (const tool of TOOLS) {
+        for (const profile of profilesByTool[tool.id] || []) writeProfileDescriptor(tool, profile)
+      }
+    })
+    .catch((error) => {
+      console.error(`[PROFILE STORE] ${String(error.message || error)}`)
+    })
   createWindow()
   createTray()
+  setImmediate(loadInstallHistory)
 
   globalShortcut.register('Ctrl+Alt+S', () => {
     if (windows.size === 0) {

@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { DEFAULT_PROFILE_ID, validateProfileId } = require('./profile-store')
 
 const SYSTEM_ROOT = process.env.OMNISHELL_SYSTEM_ROOT
   ? path.resolve(process.env.OMNISHELL_SYSTEM_ROOT)
@@ -7,7 +8,7 @@ const SYSTEM_ROOT = process.env.OMNISHELL_SYSTEM_ROOT
 
 const TOOLS = [
   { id: 'claude', name: 'Claude Code', sigil: 'CL', accent: '#f0a77d', summary: 'Anthropic agentic coding terminal', category: 'ai', dir: 'ClaudeCode', bin: 'claude', installer: { type: 'npm', package: '@anthropic-ai/claude-code' } },
-  { id: 'codex', name: 'Codex', sigil: 'CX', accent: '#81e6c1', summary: 'OpenAI coding agent for the terminal', category: 'ai', dir: 'Codex', bin: 'codex', installer: { type: 'npm', package: '@openai/codex' } },
+  { id: 'codex', name: 'Codex', sigil: 'CX', accent: '#78a9ff', summary: 'OpenAI coding agent for the terminal', category: 'ai', dir: 'Codex', bin: 'codex', installer: { type: 'npm', package: '@openai/codex' } },
   { id: 'opencode', name: 'OpenCode', sigil: 'OC', accent: '#f5d76e', summary: 'Open-source terminal coding agent', category: 'ai', dir: 'OpenCode', bin: 'opencode', installer: { type: 'npm', package: 'opencode-ai' } },
   {
     id: 'agy',
@@ -35,7 +36,7 @@ const TOOLS = [
     bin: 'aider',
     installer: { type: 'powershell-script', url: 'https://aider.chat/install.ps1' }
   },
-  { id: 'copilot', name: 'GitHub Copilot CLI', sigil: 'GH', accent: '#a8b4ff', summary: 'GitHub Copilot directly in the shell', category: 'ai', dir: 'CopilotCLI', bin: 'copilot', installer: { type: 'npm', package: '@github/copilot' } },
+  { id: 'copilot', name: 'GitHub Copilot CLI', sigil: 'GH', accent: '#a8b4ff', terminalBackground: '#0d1117', summary: 'GitHub Copilot directly in the shell', category: 'ai', dir: 'CopilotCLI', bin: 'copilot', installer: { type: 'npm', package: '@github/copilot' } },
   {
     id: 'cursor-agent',
     name: 'Cursor Agent',
@@ -73,6 +74,8 @@ const TOOLS = [
 ]
 
 const TOOL_BY_ID = new Map(TOOLS.map((tool) => [tool.id, tool]))
+const EXECUTABLE_CANDIDATE_CACHE = new Map()
+const RESOLVED_EXECUTABLE_CACHE = new Map()
 
 function findTool(id) {
   return TOOL_BY_ID.get(id)
@@ -82,8 +85,28 @@ function toolDir(tool, systemRoot = SYSTEM_ROOT) {
   return path.join(systemRoot, tool.dir)
 }
 
-function executableCandidates(tool, systemRoot = SYSTEM_ROOT) {
-  const root = toolDir(tool, systemRoot)
+function profileDir(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
+  validateProfileId(profileId)
+  const runtimeRoot = toolDir(tool, systemRoot)
+  return profileId === DEFAULT_PROFILE_ID
+    ? runtimeRoot
+    : path.join(runtimeRoot, 'profiles', profileId)
+}
+
+function profileRuntimeDir(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
+  validateProfileId(profileId)
+  return profileId === DEFAULT_PROFILE_ID
+    ? toolDir(tool, systemRoot)
+    : path.join(profileDir(tool, profileId, systemRoot), 'runtime')
+}
+
+function executableCandidates(tool, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
+  validateProfileId(profileId)
+  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}\u0000${profileId}`
+  const cached = EXECUTABLE_CANDIDATE_CACHE.get(cacheKey)
+  if (cached) return cached
+
+  const root = profileRuntimeDir(tool, profileId, systemRoot)
   const candidates = []
 
   if (tool.installer && tool.installer.type === 'npm') {
@@ -113,11 +136,20 @@ function executableCandidates(tool, systemRoot = SYSTEM_ROOT) {
     candidates.push(path.join(root, 'bin', 'cursor-agent.cmd'))
   }
 
-  return [...new Set(candidates)]
+  const uniqueCandidates = Object.freeze([...new Set(candidates)])
+  EXECUTABLE_CANDIDATE_CACHE.set(cacheKey, uniqueCandidates)
+  return uniqueCandidates
 }
 
-function resolveLocalExecutable(tool, systemRoot = SYSTEM_ROOT) {
-  return executableCandidates(tool, systemRoot).find((candidate) => fs.existsSync(candidate)) || null
+function resolveLocalExecutable(tool, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
+  validateProfileId(profileId)
+  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}\u0000${profileId}`
+  const cached = RESOLVED_EXECUTABLE_CACHE.get(cacheKey)
+  if (cached && fs.existsSync(cached)) return cached
+  RESOLVED_EXECUTABLE_CACHE.delete(cacheKey)
+  const resolved = executableCandidates(tool, systemRoot, profileId).find((candidate) => fs.existsSync(candidate)) || null
+  if (resolved) RESOLVED_EXECUTABLE_CACHE.set(cacheKey, resolved)
+  return resolved
 }
 
 function ensureJsonFile(filePath, value) {
@@ -126,8 +158,7 @@ function ensureJsonFile(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8')
 }
 
-function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
-  const root = toolDir(tool, systemRoot)
+function ensureProfileDirectories(root) {
   const directories = [
     root,
     path.join(root, '.config'),
@@ -138,8 +169,13 @@ function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
     path.join(root, 'AppData', 'Local'),
     path.join(root, 'Temp')
   ]
-
   for (const directory of directories) fs.mkdirSync(directory, { recursive: true })
+  return root
+}
+
+function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
+  const root = toolDir(tool, systemRoot)
+  ensureProfileDirectories(root)
 
   if (tool.installer && tool.installer.type === 'npm') {
     ensureJsonFile(path.join(root, 'package.json'), {
@@ -150,6 +186,25 @@ function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
   }
 
   return root
+}
+
+function prepareProfileRuntimeDirectories(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
+  if (profileId === DEFAULT_PROFILE_ID) return prepareToolDirectories(tool, systemRoot)
+  const root = profileRuntimeDir(tool, profileId, systemRoot)
+  fs.mkdirSync(root, { recursive: true })
+  if (tool.installer && tool.installer.type === 'npm') {
+    ensureJsonFile(path.join(root, 'package.json'), {
+      name: `omnishell-${tool.id}-${profileId}`,
+      version: '1.0.0',
+      private: true
+    })
+  }
+  return root
+}
+
+function prepareProfileDirectories(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
+  if (profileId === DEFAULT_PROFILE_ID) return prepareToolDirectories(tool, systemRoot)
+  return ensureProfileDirectories(profileDir(tool, profileId, systemRoot))
 }
 
 function prepareAllTools(systemRoot = SYSTEM_ROOT) {
@@ -176,8 +231,9 @@ function copySafeBaseEnvironment(baseEnv) {
   return result
 }
 
-function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT) {
-  const root = prepareToolDirectories(tool, systemRoot)
+function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
+  const runtimeRoot = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
+  const root = prepareProfileDirectories(tool, profileId, systemRoot)
   const drive = path.parse(root).root.replace(/[\\/]$/, '')
   const configHome = path.join(root, '.config')
   const dataHome = path.join(root, '.local', 'share')
@@ -246,16 +302,28 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
     }
   }
 
-  const localBinDirectories = [path.join(root, 'node_modules', '.bin'), path.join(root, 'bin'), root]
+  const localBinDirectories = [path.join(runtimeRoot, 'node_modules', '.bin'), path.join(runtimeRoot, 'bin'), runtimeRoot]
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH'
   env[pathKey] = localBinDirectories.join(path.delimiter) + path.delimiter + (env[pathKey] || '')
 
   return env
 }
 
-function createInstallEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT) {
-  const root = toolDir(tool, systemRoot)
-  const env = createIsolatedEnvironment(tool, baseEnv, systemRoot)
+function createInstallEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
+  const root = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
+  const env = createIsolatedEnvironment(tool, baseEnv, systemRoot, profileId)
+  const drive = path.parse(root).root.replace(/[\\/]$/, '')
+  Object.assign(env, {
+    HOME: root,
+    USERPROFILE: root,
+    HOMEDRIVE: drive,
+    HOMEPATH: root.slice(drive.length),
+    APPDATA: path.join(root, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.join(root, 'AppData', 'Local'),
+    TEMP: path.join(root, 'Temp'),
+    TMP: path.join(root, 'Temp')
+  })
+  ensureProfileDirectories(root)
   env.npm_config_cache = path.join(root, '.cache', 'npm')
   env.npm_config_update_notifier = 'false'
 
@@ -276,9 +344,10 @@ function externalScriptPath(appRoot, scriptName) {
     .replace(/([\\/])app\.asar([\\/])/i, '$1app.asar.unpacked$2')
 }
 
-function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT) {
+function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
   if (!tool || !tool.installer) return null
-  const root = prepareToolDirectories(tool, systemRoot)
+  const root = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
+  const workingDirectory = path.join(systemRoot, '_install', tool.id, profileId)
   const installer = tool.installer
 
   if (installer.type === 'npm') {
@@ -304,7 +373,7 @@ function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoo
         '-NoProfile', '-ExecutionPolicy', 'Bypass',
         '-File', externalScriptPath(appRoot, 'install-remote.ps1'),
         '-Uri', installer.url,
-        '-Destination', path.join(systemRoot, '_install', `${tool.id}.ps1`),
+        '-Destination', path.join(workingDirectory, 'bootstrap.ps1'),
         '-InstallerArgumentsJson', JSON.stringify(installer.args || [])
       ],
       cwd: root
@@ -321,7 +390,7 @@ function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoo
         '-AssetName', installer.asset,
         '-ExecutableName', installer.executable,
         '-DestinationDirectory', path.join(root, 'bin'),
-        '-WorkingDirectory', path.join(systemRoot, '_install', tool.id)
+        '-WorkingDirectory', workingDirectory
       ],
       cwd: root
     }
@@ -335,7 +404,7 @@ function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoo
         '-File', externalScriptPath(appRoot, 'install-cursor.ps1'),
         '-BootstrapUri', installer.url,
         '-DestinationDirectory', path.join(root, 'bin'),
-        '-WorkingDirectory', path.join(systemRoot, '_install', tool.id)
+        '-WorkingDirectory', workingDirectory
       ],
       cwd: root
     }
@@ -355,7 +424,11 @@ module.exports = {
   externalScriptPath,
   findTool,
   prepareAllTools,
+  prepareProfileDirectories,
+  prepareProfileRuntimeDirectories,
   prepareToolDirectories,
+  profileDir,
+  profileRuntimeDir,
   resolveLocalExecutable,
   toolDir
 }
