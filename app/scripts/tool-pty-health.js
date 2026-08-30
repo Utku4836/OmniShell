@@ -5,6 +5,7 @@ const {
   resolveLocalExecutable,
   toolDir
 } = require('../lib/tooling')
+const { terminateProcessTree } = require('../lib/install-runtime')
 
 function clean(value) {
   return String(value || '')
@@ -41,7 +42,7 @@ function checkTool(tool) {
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      try { processHandle.kill() } catch (error) {}
+      terminateProcessTree(processHandle)
       resolve({ tool, ok: false, output: 'timed out after 30 seconds' })
     }, 30000)
 

@@ -32,9 +32,20 @@ function incompleteQuerySuffix(value) {
   return csi ? csi[0] : ''
 }
 
-function collectTerminalResponses(previousBuffer, data, cols, rows, pixelWidth = cols * 9, pixelHeight = rows * 18) {
+function collectTerminalResponses(
+  previousBuffer,
+  data,
+  cols,
+  rows,
+  pixelWidth = cols * 9,
+  pixelHeight = rows * 18,
+  dynamicColors = {}
+) {
   const input = `${previousBuffer || ''}${data || ''}`
   const responses = []
+  const background = /^[0-9a-f]{6}$/i.test(dynamicColors.background || '') ? dynamicColors.background : TERMINAL_COLORS[0]
+  const foreground = /^[0-9a-f]{6}$/i.test(dynamicColors.foreground || '') ? dynamicColors.foreground : 'e8e4e2'
+  const cursor = /^[0-9a-f]{6}$/i.test(dynamicColors.cursor || '') ? dynamicColors.cursor : 'ff6427'
 
   if (input.includes('\u001b[14t')) responses.push(`\u001b[4;${pixelHeight};${pixelWidth}t`)
   if (input.includes('\u001b[16t')) {
@@ -46,13 +57,13 @@ function collectTerminalResponses(previousBuffer, data, cols, rows, pixelWidth =
 
   const paletteQuery = /\u001b\]4;(\d+);\?(?:\u0007|\u001b\\)/g
   for (const match of input.matchAll(paletteQuery)) {
-    const color = TERMINAL_COLORS[Number(match[1])] || TERMINAL_COLORS[0]
+    const color = Number(match[1]) === 0 ? background : (TERMINAL_COLORS[Number(match[1])] || background)
     responses.push(`\u001b]4;${match[1]};${rgbResponse(color)}\u0007`)
   }
 
   const dynamicColorQuery = /\u001b\](10|11|12);\?(?:\u0007|\u001b\\)/g
   for (const match of input.matchAll(dynamicColorQuery)) {
-    const color = match[1] === '11' ? TERMINAL_COLORS[0] : (match[1] === '12' ? 'ff6427' : 'e8e4e2')
+    const color = match[1] === '11' ? background : (match[1] === '12' ? cursor : foreground)
     responses.push(`\u001b]${match[1]};${rgbResponse(color)}\u0007`)
   }
 

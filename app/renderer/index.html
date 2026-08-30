@@ -12,6 +12,16 @@
 <body>
   <div id="panel">
     <div id="drag-region" aria-hidden="true"></div>
+    <div id="resize-handles" aria-hidden="true">
+      <div class="resize-handle resize-n" data-resize="n"></div>
+      <div class="resize-handle resize-e" data-resize="e"></div>
+      <div class="resize-handle resize-s" data-resize="s"></div>
+      <div class="resize-handle resize-w" data-resize="w"></div>
+      <div class="resize-handle resize-nw" data-resize="nw"></div>
+      <div class="resize-handle resize-ne" data-resize="ne"></div>
+      <div class="resize-handle resize-sw" data-resize="sw"></div>
+      <div class="resize-handle resize-se" data-resize="se"></div>
+    </div>
     <main id="view-list">
       <section class="brand-stage" aria-labelledby="brand-title">
         <pre id="brand-title" class="brand-title" aria-label="OmniShell"> ██████╗ ███╗   ███╗███╗   ██╗██╗███████╗██╗  ██╗███████╗██╗     ██╗
@@ -34,14 +44,37 @@
       <div id="term-container"></div>
     </main>
 
+    <div id="profile-overlay" class="profile-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+      <section class="profile-card">
+        <header class="profile-header">
+          <h2 id="profile-title">CLI Profiles</h2>
+        </header>
+        <div id="profile-list" role="listbox" aria-label="CLI profiles"></div>
+        <div id="profile-editor" class="profile-editor hidden">
+          <label id="profile-editor-label" for="profile-name">Profile name</label>
+          <input id="profile-name" type="text" maxlength="40" autocomplete="off" spellcheck="false">
+          <div class="profile-editor-actions">
+            <button id="profile-save" type="button">SAVE</button>
+            <button id="profile-cancel" type="button">CANCEL</button>
+          </div>
+        </div>
+        <div class="profile-actions">
+          <button id="profile-new" type="button">+ NEW</button>
+          <button id="profile-rename" type="button">RENAME</button>
+          <button id="profile-install" class="hidden" type="button">INSTALL</button>
+        </div>
+        <p id="profile-status" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+
     <div id="custom-context-menu" class="hidden" role="menu" aria-label="OmniShell actions">
-      <button class="menu-item" id="ctx-new-current" type="button" role="menuitem"><span id="ctx-new-current-label">Open CLI in New Window</span></button>
-      <button class="menu-item" id="ctx-back" type="button" role="menuitem">Back to Menu</button>
-      <button class="menu-item" id="ctx-restart" type="button" role="menuitem">Restart CLI</button>
-      <div class="menu-item has-sub" id="ctx-open-other" role="menuitem" tabindex="0" aria-haspopup="menu" aria-expanded="false"><span class="menu-label">Open Another CLI</span><span class="menu-arrow">›</span><div id="ctx-sub-menu" class="sub-menu" role="menu"></div></div>
+      <button class="menu-item" id="ctx-new-current" type="button" role="menuitem"><span id="ctx-new-current-label">New Window</span></button>
+      <button class="menu-item" id="ctx-restart" type="button" role="menuitem">Restart</button>
+      <div class="menu-item has-sub" id="ctx-open-other" role="menuitem" tabindex="0" aria-haspopup="menu" aria-expanded="false"><span class="menu-label">Switch CLI</span><span class="menu-arrow">›</span><div id="ctx-sub-menu" class="sub-menu" role="menu"></div></div>
       <button class="menu-item" id="ctx-install" type="button" role="menuitem"><span id="ctx-install-label">Install CLI</span></button>
-      <button class="menu-item" id="ctx-cancel-install" type="button" role="menuitem">Cancel Installation</button>
-      <button class="menu-item" id="ctx-open-log" type="button" role="menuitem">Open Install Log</button>
+      <button class="menu-item" id="ctx-cancel-install" type="button" role="menuitem">Cancel Install</button>
+      <button class="menu-item" id="ctx-open-log" type="button" role="menuitem">Install Log</button>
+      <button class="menu-item" id="ctx-copy" type="button" role="menuitem">Copy</button>
       <div class="menu-separator"></div>
       <button class="menu-item menu-danger" id="ctx-close" type="button" role="menuitem">Close OmniShell</button>
     </div>

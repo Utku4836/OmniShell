@@ -1,6 +1,7 @@
 class PtyRegistry {
-  constructor() {
+  constructor(killProcess = null) {
     this.sessions = new Map()
+    this.killProcess = killProcess || ((proc) => proc.kill())
   }
 
   get(senderId) {
@@ -26,7 +27,7 @@ class PtyRegistry {
     if (session.outputTimer) clearTimeout(session.outputTimer)
     session.outputTimer = null
     session.outputBuffer = ''
-    try { session.proc.kill() } catch (error) {}
+    try { this.killProcess(session.proc) } catch (error) {}
     return true
   }
 
