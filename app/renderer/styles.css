@@ -292,7 +292,6 @@ button { font: inherit; }
   z-index: 9000;
   width: 220px;
   padding: 4px;
-  contain: layout paint;
   border: 1px solid #2f1a12;
   border-radius: 8px;
   background: #050505;
@@ -303,6 +302,9 @@ button { font: inherit; }
   font-weight: 500;
   animation: menuIn var(--motion-base) var(--ease-out);
 }
+
+#custom-context-menu { contain: layout; overflow: visible; }
+.sub-menu { contain: layout paint; }
 
 .menu-item {
   position: relative;
@@ -455,7 +457,8 @@ button { font: inherit; }
 .profile-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .profile-actions,
-.profile-editor-actions {
+.profile-editor-actions,
+.profile-settings-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -469,7 +472,9 @@ button { font: inherit; }
 .profile-editor-actions { padding: 0; }
 
 .profile-actions button,
-.profile-editor-actions button {
+.profile-editor-actions button,
+.profile-settings-actions button,
+.profile-settings-options button {
   min-height: 40px;
   padding: 7px 10px;
   border: 0;
@@ -488,13 +493,46 @@ button { font: inherit; }
 .profile-actions button:hover,
 .profile-actions button:focus-visible,
 .profile-editor-actions button:hover,
-.profile-editor-actions button:focus-visible {
+.profile-editor-actions button:focus-visible,
+.profile-settings-actions button:hover,
+.profile-settings-actions button:focus-visible,
+.profile-settings-options button:hover,
+.profile-settings-options button:focus-visible {
   outline: 0;
   border-bottom-color: #66615e;
   color: #f1eeec;
 }
 
 .profile-actions button:disabled { opacity: 0.35; pointer-events: none; }
+
+.profile-settings {
+  display: grid;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  animation: editorIn var(--motion-base) var(--ease-out);
+}
+
+.profile-settings-options {
+  display: grid;
+  gap: 1px;
+}
+
+.profile-settings-options button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
+  color: #8d8784;
+}
+
+.profile-settings-options button[aria-pressed="true"] { color: #f1eeec; }
+.profile-settings-options button:disabled { opacity: 0.35; cursor: default; }
+.profile-settings-actions { padding: 2px 0 0; }
+.profile-delete { margin-left: auto; color: #d97864 !important; }
+.profile-delete:hover,
+.profile-delete:focus-visible { color: #f0927d !important; border-bottom-color: #d97864 !important; }
 
 .profile-editor {
   display: grid;
@@ -686,7 +724,7 @@ button { font: inherit; }
     animation-delay: 0ms !important;
     animation-duration: 80ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 80ms !important;
+    transition-duration: 0ms !important;
   }
 
   .cli-item,

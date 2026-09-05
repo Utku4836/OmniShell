@@ -146,6 +146,9 @@ function terminateProcessTree(proc, platform = process.platform, spawnProcess = 
         windowsHide: true,
         stdio: 'ignore'
       })
+      const fallback = () => { try { proc.kill() } catch (error) {} }
+      killer?.once('error', fallback)
+      killer?.once('exit', (code) => { if (code !== 0) fallback() })
       if (killer && typeof killer.unref === 'function') killer.unref()
     } else {
       proc.kill('SIGTERM')

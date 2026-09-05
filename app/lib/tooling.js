@@ -291,7 +291,7 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
       CRUSH_GLOBAL_DATA: path.join(dataHome, 'crush')
     },
     qwen: { QWEN_CONFIG_DIR: path.join(root, '.qwen') },
-    kimi: {}
+    kimi: { KIMI_CODE_HOME: path.join(root, '.kimi-code') }
   }
 
   const profileEnvironment = profiles[tool.id] || {}
