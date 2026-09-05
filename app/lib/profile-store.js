@@ -2,12 +2,22 @@ const fsp = require('node:fs/promises')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const DEFAULT_PROFILE_ID = 'default'
 const PROFILE_ID_PATTERN = /^p_[0-9a-f]{32}$/
+const DEFAULT_PROFILE_SETTINGS = Object.freeze({
+  fullPermission: false,
+  sharedSessions: false,
+  sharedModels: false,
+  sharedConfig: false
+})
+
+function normalizeProfileSettings(value = {}) {
+  return Object.fromEntries(Object.keys(DEFAULT_PROFILE_SETTINGS).map((key) => [key, value?.[key] === true]))
+}
 
 function cloneProfile(profile) {
-  return { ...profile }
+  return { ...profile, settings: normalizeProfileSettings(profile.settings) }
 }
 
 function normalizeProfileName(value) {
@@ -27,6 +37,7 @@ function defaultProfile(now) {
   return {
     id: DEFAULT_PROFILE_ID,
     name: 'Default',
+    settings: normalizeProfileSettings(),
     createdAt: now,
     updatedAt: now
   }
@@ -52,15 +63,22 @@ class ProfileStore {
   async #loadFromDisk() {
     try {
       const parsed = JSON.parse(await fsp.readFile(this.filePath, 'utf8'))
-      if (parsed?.schemaVersion !== SCHEMA_VERSION || typeof parsed.tools !== 'object' || Array.isArray(parsed.tools)) {
+      if (![1, SCHEMA_VERSION].includes(parsed?.schemaVersion) || !parsed.tools || typeof parsed.tools !== 'object' || Array.isArray(parsed.tools)) {
         throw new Error('Unsupported profile metadata schema')
       }
-      this.state = { schemaVersion: SCHEMA_VERSION, tools: parsed.tools }
+      this.state = {
+        schemaVersion: SCHEMA_VERSION,
+        tools: Object.fromEntries(Object.entries(parsed.tools).map(([toolId, profiles]) => [
+          toolId,
+          Array.isArray(profiles) ? profiles.map((profile) => ({ ...profile, settings: normalizeProfileSettings(profile.settings) })) : []
+        ]))
+      }
     } catch (error) {
       if (error.code === 'ENOENT') return
+      if (error.code) throw error
       await fsp.mkdir(this.directory, { recursive: true })
       const backupPath = path.join(this.directory, `profiles.corrupt-${Date.now()}.json`)
-      try { await fsp.rename(this.filePath, backupPath) } catch (renameError) {}
+      await fsp.rename(this.filePath, backupPath)
       this.state = { schemaVersion: SCHEMA_VERSION, tools: {} }
     }
   }
@@ -73,16 +91,26 @@ class ProfileStore {
   async #persist() {
     await fsp.mkdir(this.directory, { recursive: true })
     const partialPath = path.join(this.directory, `profiles.${process.pid}.${this.uuid()}.partial`)
-    await fsp.writeFile(partialPath, JSON.stringify(this.state, null, 2), 'utf8')
-    await fsp.rename(partialPath, this.filePath)
+    try {
+      await fsp.writeFile(partialPath, JSON.stringify(this.state, null, 2), 'utf8')
+      await fsp.rename(partialPath, this.filePath)
+    } finally {
+      await fsp.rm(partialPath, { force: true }).catch(() => {})
+    }
   }
 
   #mutate(operation) {
     const task = this.writeQueue.then(async () => {
       await this.load()
-      const result = operation()
-      await this.#persist()
-      return result
+      const previous = structuredClone(this.state)
+      try {
+        const result = operation()
+        await this.#persist()
+        return result
+      } catch (error) {
+        this.state = previous
+        throw error
+      }
     })
     this.writeQueue = task.catch(() => {})
     return task
@@ -90,6 +118,7 @@ class ProfileStore {
 
   async list(toolId) {
     await this.load()
+    await this.writeQueue
     if (this.#profilesFor(toolId).length === 0) {
       await this.#mutate(() => {
         if (this.#profilesFor(toolId).length === 0) {
@@ -102,6 +131,7 @@ class ProfileStore {
 
   async ensureTools(toolIds) {
     await this.load()
+    await this.writeQueue
     const missing = toolIds.filter((toolId) => this.#profilesFor(toolId).length === 0)
     if (missing.length > 0) {
       await this.#mutate(() => {
@@ -124,8 +154,9 @@ class ProfileStore {
     return profiles.find((profile) => profile.id === profileId) || null
   }
 
-  async create(toolId, requestedName) {
+  async create(toolId, requestedName, requestedSettings = {}) {
     const name = normalizeProfileName(requestedName)
+    const settings = normalizeProfileSettings(requestedSettings)
     return this.#mutate(() => {
       const profiles = this.#profilesFor(toolId)
       if (profiles.length === 0) profiles.push(defaultProfile(this.now()))
@@ -135,6 +166,7 @@ class ProfileStore {
       const profile = {
         id: `p_${this.uuid().replace(/-/g, '')}`,
         name,
+        settings,
         createdAt: timestamp,
         updatedAt: timestamp
       }
@@ -162,12 +194,38 @@ class ProfileStore {
       return cloneProfile(profile)
     })
   }
+
+  async updateSettings(toolId, profileId, requestedSettings) {
+    validateProfileId(profileId)
+    const settings = normalizeProfileSettings(requestedSettings)
+    return this.#mutate(() => {
+      const profile = this.#profilesFor(toolId).find((candidate) => candidate.id === profileId)
+      if (!profile) throw new Error('Profile not found')
+      profile.settings = settings
+      profile.updatedAt = this.now()
+      return cloneProfile(profile)
+    })
+  }
+
+  async delete(toolId, profileId) {
+    validateProfileId(profileId)
+    if (profileId === DEFAULT_PROFILE_ID) throw new Error('The Default profile cannot be deleted')
+    return this.#mutate(() => {
+      const profiles = this.#profilesFor(toolId)
+      const index = profiles.findIndex((candidate) => candidate.id === profileId)
+      if (index < 0) throw new Error('Profile not found')
+      const [profile] = profiles.splice(index, 1)
+      return cloneProfile(profile)
+    })
+  }
 }
 
 module.exports = {
   DEFAULT_PROFILE_ID,
+  DEFAULT_PROFILE_SETTINGS,
   PROFILE_ID_PATTERN,
   ProfileStore,
   normalizeProfileName,
+  normalizeProfileSettings,
   validateProfileId
 }

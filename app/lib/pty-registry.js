@@ -8,6 +8,10 @@ class PtyRegistry {
     return this.sessions.get(senderId) || null
   }
 
+  entries() {
+    return [...this.sessions.entries()]
+  }
+
   replace(senderId, session) {
     this.kill(senderId)
     this.sessions.set(senderId, session)

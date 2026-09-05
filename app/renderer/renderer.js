@@ -16,10 +16,17 @@ const profileList = $('profile-list')
 const profileEditor = $('profile-editor')
 const profileEditorLabel = $('profile-editor-label')
 const profileName = $('profile-name')
+const profileCreateSettings = $('profile-create-settings')
 const profileStatus = $('profile-status')
 const profileNew = $('profile-new')
 const profileRename = $('profile-rename')
 const profileInstall = $('profile-install')
+const profileSettingsOpen = $('profile-settings-open')
+const profileSettings = $('profile-settings')
+const profileSettingsOptions = $('profile-settings-options')
+const profileSettingsSave = $('profile-settings-save')
+const profileSettingsCancel = $('profile-settings-cancel')
+const profileDelete = $('profile-delete')
 const profileSave = $('profile-save')
 const profileCancel = $('profile-cancel')
 
@@ -43,6 +50,7 @@ const rows = new Map()
 const dirtyRows = new Set()
 const pendingProgress = new Map()
 const profilesCache = new Map()
+const profileCapabilitiesCache = new Map()
 const profileRows = new Map()
 const submenuRows = new Map()
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -56,6 +64,8 @@ let profileDialogToolId = null
 let profileDialogMode = 'current'
 let selectedProfileId = null
 let profileEditorMode = null
+let profileSettingsDraft = null
+let profileDeleteArmed = false
 let terminal = null
 let fitAddon = null
 let webglAddon = null
@@ -324,6 +334,7 @@ async function loadProfiles(tool, force = false) {
   const result = await window.api.profiles(tool.id)
   if (!result?.ok) throw new Error(result?.error || 'Profiles could not be loaded')
   profilesCache.set(tool.id, result.profiles)
+  profileCapabilitiesCache.set(tool.id, result.capabilities || {})
   return result.profiles
 }
 
@@ -369,9 +380,67 @@ function selectedProfileRecord() {
   return profiles.find((profile) => profile.id === selectedProfileId) || null
 }
 
+const PROFILE_SETTING_LABELS = {
+  fullPermission: 'FULL PERMISSION',
+  sharedSessions: 'SHARED SESSIONS',
+  sharedModels: 'SHARED MODELS',
+  sharedConfig: 'SHARED CONFIG'
+}
+
+function normalizedSettings(settings = {}) {
+  return Object.fromEntries(Object.keys(PROFILE_SETTING_LABELS).map((key) => [key, settings[key] === true]))
+}
+
+function renderSettingsOptions(container) {
+  const capabilities = profileCapabilitiesCache.get(profileDialogToolId) || {}
+  const fragment = document.createDocumentFragment()
+  for (const [key, label] of Object.entries(PROFILE_SETTING_LABELS)) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.dataset.setting = key
+    const supported = key === 'fullPermission' || capabilities[key] !== false
+    const enabled = supported && profileSettingsDraft?.[key] === true
+    button.disabled = !supported
+    button.setAttribute('aria-pressed', String(enabled))
+    button.textContent = `${enabled ? '[x]' : '[ ]'} ${label}${supported ? '' : ' / N/A'}`
+    fragment.appendChild(button)
+  }
+  container.replaceChildren(fragment)
+}
+
+function toggleProfileSetting(event) {
+  const button = event.target.closest('[data-setting]')
+  if (!button || button.disabled || !profileSettingsDraft) return
+  profileSettingsDraft[button.dataset.setting] = !profileSettingsDraft[button.dataset.setting]
+  renderSettingsOptions(button.parentElement)
+  button.parentElement.querySelector(`[data-setting="${button.dataset.setting}"]`)?.focus({ preventScroll: true })
+}
+
+function hideProfileSettings() {
+  profileSettingsDraft = null
+  profileDeleteArmed = false
+  profileDelete.textContent = 'DELETE'
+  profileSettings.classList.add('hidden')
+  profileStatus.textContent = ''
+}
+
+function showProfileSettings() {
+  const profile = selectedProfileRecord()
+  if (!profile) return
+  hideProfileEditor()
+  profileSettingsDraft = normalizedSettings(profile.settings)
+  profileDeleteArmed = false
+  profileDelete.textContent = 'DELETE'
+  profileDelete.classList.toggle('hidden', profile.id === 'default')
+  profileSettings.classList.remove('hidden')
+  renderSettingsOptions(profileSettingsOptions)
+  profileSettingsOptions.querySelector('button:not([disabled])')?.focus({ preventScroll: true })
+}
+
 function updateProfileActions() {
   const profile = selectedProfileRecord()
   profileRename.disabled = !profile
+  profileSettingsOpen.disabled = !profile
   profileInstall.classList.toggle('hidden', !profile || profile.installed)
   profileInstall.disabled = !profile || profile.installed
 }
@@ -392,8 +461,10 @@ function setSelectedProfile(profileId, focus = false) {
 }
 
 function hideProfileEditor() {
+  if (profileEditorMode === 'create') profileSettingsDraft = null
   profileEditorMode = null
   profileEditor.classList.add('hidden')
+  profileCreateSettings.classList.add('hidden')
   profileName.value = ''
   profileStatus.textContent = ''
 }
@@ -409,6 +480,7 @@ function closeProfilePicker(immediate = false) {
     selectedProfileId = null
     profileList.replaceChildren()
     hideProfileEditor()
+    hideProfileSettings()
     profileOverlay.classList.add('hidden')
     profileOverlay.classList.remove('closing')
     if (currentView === 'terminal') terminal?.focus()
@@ -476,10 +548,18 @@ function showProfileEditor(mode) {
   const profiles = profilesCache.get(tool.id) || []
   const selected = profiles.find((profile) => profile.id === selectedProfileId)
   if (mode === 'rename' && !selected) return
+  hideProfileSettings()
   profileEditorMode = mode
   profileEditorLabel.textContent = mode === 'create' ? 'NEW PROFILE NAME' : 'RENAME PROFILE'
   profileName.value = mode === 'rename' ? selected.name : ''
   profileEditor.classList.remove('hidden')
+  if (mode === 'create') {
+    profileSettingsDraft = normalizedSettings()
+    profileCreateSettings.classList.remove('hidden')
+    renderSettingsOptions(profileCreateSettings)
+  } else {
+    profileCreateSettings.classList.add('hidden')
+  }
   profileStatus.textContent = ''
   profileName.focus()
   profileName.select()
@@ -493,7 +573,7 @@ async function saveProfileEditor() {
   profileStatus.textContent = profileEditorMode === 'create' ? 'Creating profile...' : 'Renaming profile...'
   try {
     const result = profileEditorMode === 'create'
-      ? await window.api.createProfile(tool.id, name)
+      ? await window.api.createProfile(tool.id, name, profileSettingsDraft)
       : await window.api.renameProfile(tool.id, selectedProfileId, name)
     if (!result?.ok) throw new Error(result?.error || 'Profile could not be saved')
     const profiles = await loadProfiles(tool, true)
@@ -507,6 +587,57 @@ async function saveProfileEditor() {
     profileStatus.textContent = String(error.message || error)
   } finally {
     profileSave.disabled = false
+  }
+}
+
+async function saveProfileSettings() {
+  const tool = profileDialogTool()
+  const profile = selectedProfileRecord()
+  if (!tool || !profile || !profileSettingsDraft) return
+  profileSettingsSave.disabled = true
+  profileStatus.textContent = 'Saving profile settings...'
+  try {
+    const result = await window.api.updateProfileSettings(tool.id, profile.id, profileSettingsDraft)
+    if (!result?.ok) throw new Error(result?.error || 'Profile settings could not be saved')
+    const profiles = await loadProfiles(tool, true)
+    selectedProfileId = result.profile.id
+    hideProfileSettings()
+    renderProfileList(profiles)
+    profileRows.get(selectedProfileId)?.focus({ preventScroll: true })
+  } catch (error) {
+    profileStatus.textContent = String(error.message || error)
+  } finally {
+    profileSettingsSave.disabled = false
+  }
+}
+
+async function deleteSelectedProfile() {
+  const tool = profileDialogTool()
+  const profile = selectedProfileRecord()
+  if (!tool || !profile || profile.id === 'default') return
+  if (!profileDeleteArmed) {
+    profileDeleteArmed = true
+    profileDelete.textContent = 'DELETE AGAIN'
+    profileStatus.textContent = 'Press DELETE AGAIN to move this profile to recoverable trash.'
+    return
+  }
+  profileDelete.disabled = true
+  try {
+    const result = await window.api.deleteProfile(tool.id, profile.id)
+    if (!result?.ok) throw new Error(result?.error || 'Profile could not be deleted')
+    profilesCache.delete(tool.id)
+    const profiles = await loadProfiles(tool, true)
+    selectedProfileId = profiles[0]?.id || null
+    hideProfileSettings()
+    renderProfileList(profiles)
+    profileStatus.textContent = 'Profile moved to recoverable trash.'
+    profileRows.get(selectedProfileId)?.focus({ preventScroll: true })
+  } catch (error) {
+    profileDeleteArmed = false
+    profileDelete.textContent = 'DELETE'
+    profileStatus.textContent = String(error.message || error)
+  } finally {
+    profileDelete.disabled = false
   }
 }
 
@@ -796,6 +927,15 @@ function applyDetectedTerminalSurface(background) {
   }
 }
 
+function isSafeTerminalSurfaceColor(color) {
+  const red = (color >> 16) & 0xff
+  const green = (color >> 8) & 0xff
+  const blue = color & 0xff
+  const brightest = Math.max(red, green, blue)
+  const darkest = Math.min(red, green, blue)
+  return brightest <= 48 && brightest - darkest <= 24
+}
+
 function detectDominantTerminalBackground() {
   terminalSurfaceTimer = null
   if (!terminal || currentView !== 'terminal') return
@@ -822,7 +962,7 @@ function detectDominantTerminalBackground() {
       dominantCount = count
     }
   }
-  if (dominantColor === null || dominantCount < Math.max(24, sampled * 0.18)) return
+  if (dominantColor === null || dominantCount < Math.max(24, sampled * 0.18) || !isSafeTerminalSurfaceColor(dominantColor)) return
   applyDetectedTerminalSurface(`#${dominantColor.toString(16).padStart(6, '0')}`)
 }
 
@@ -902,6 +1042,7 @@ async function openTerminal(tool, profile = { id: 'default', name: 'Default' }) 
 
   fitTerminal()
   await new Promise((resolve) => setTimeout(resolve, 0))
+  if (launchToken !== terminalLaunchToken) return
   fitTerminal()
 
   let result
@@ -1060,6 +1201,18 @@ function openSubmenu() {
   clearTimeout(submenuCloseTimer)
   ctxOpenOther.classList.add('submenu-open')
   ctxOpenOther.setAttribute('aria-expanded', 'true')
+  const parent = ctxOpenOther.getBoundingClientRect()
+  ctxSubMenu.style.maxHeight = `${Math.max(1, window.innerHeight - 16)}px`
+  const width = ctxSubMenu.offsetWidth
+  const height = ctxSubMenu.offsetHeight
+  const preferredLeft = parent.right + width + 13 <= window.innerWidth
+    ? parent.right + 5
+    : parent.left - width - 5
+  const left = Math.max(8, Math.min(preferredLeft, window.innerWidth - width - 8))
+  const top = Math.max(8, Math.min(parent.top - 6, window.innerHeight - height - 8))
+  ctxSubMenu.style.left = `${left - parent.left}px`
+  ctxSubMenu.style.right = 'auto'
+  ctxSubMenu.style.top = `${top - parent.top}px`
 }
 
 function closeSubmenu() {
@@ -1156,8 +1309,14 @@ function setupContextMenu() {
   })
   ctxOpenOther.addEventListener('click', (event) => {
     event.stopPropagation()
-    if (ctxOpenOther.classList.contains('submenu-open')) closeSubmenu()
-    else openSubmenu()
+    openSubmenu()
+  })
+  ctxOpenOther.addEventListener('keydown', (event) => {
+    if (event.target !== ctxOpenOther || !['Enter', ' ', 'ArrowRight', 'ArrowDown'].includes(event.key)) return
+    event.preventDefault()
+    event.stopPropagation()
+    openSubmenu()
+    ctxSubMenu.querySelector('.sub-item:not(.hidden)')?.focus()
   })
   ctxSubMenu.addEventListener('click', (event) => {
     const item = event.target.closest('.sub-item')
@@ -1201,9 +1360,15 @@ function setupProfileControls() {
   })
   profileNew.addEventListener('click', () => showProfileEditor('create'))
   profileRename.addEventListener('click', () => showProfileEditor('rename'))
+  profileSettingsOpen.addEventListener('click', showProfileSettings)
   profileInstall.addEventListener('click', beginProfileInstall)
   profileSave.addEventListener('click', saveProfileEditor)
   profileCancel.addEventListener('click', hideProfileEditor)
+  profileCreateSettings.addEventListener('click', toggleProfileSetting)
+  profileSettingsOptions.addEventListener('click', toggleProfileSetting)
+  profileSettingsSave.addEventListener('click', saveProfileSettings)
+  profileSettingsCancel.addEventListener('click', hideProfileSettings)
+  profileDelete.addEventListener('click', deleteSelectedProfile)
   profileOverlay.addEventListener('pointerdown', (event) => {
     if (event.target === profileOverlay) closeProfilePicker()
   })
@@ -1292,8 +1457,12 @@ function setupControls() {
   window.addEventListener('keydown', (event) => {
     if (!profileOverlay.classList.contains('hidden')) {
       if (trapProfileFocus(event)) return
+      if (!profileSettings.classList.contains('hidden')) {
+        if (event.key === 'Escape') { event.preventDefault(); hideProfileSettings() }
+        return
+      }
       if (!profileEditor.classList.contains('hidden')) {
-        if (event.key === 'Enter') { event.preventDefault(); saveProfileEditor() }
+        if (event.key === 'Enter' && !event.target.closest('[data-setting]')) { event.preventDefault(); saveProfileEditor() }
         else if (event.key === 'Escape') { event.preventDefault(); hideProfileEditor() }
         return
       }
@@ -1303,6 +1472,7 @@ function setupControls() {
       else if (event.key === 'Enter') { event.preventDefault(); openSelectedProfile() }
       else if (event.key.toLowerCase() === 'n') { event.preventDefault(); showProfileEditor('create') }
       else if (event.key.toLowerCase() === 'r') { event.preventDefault(); showProfileEditor('rename') }
+      else if (event.key.toLowerCase() === 's') { event.preventDefault(); showProfileSettings() }
       else if (event.key.toLowerCase() === 'i') { event.preventDefault(); beginProfileInstall() }
       return
     }

@@ -1,189 +1,135 @@
 <p align="center">
-  <img src="app/assets/omnishell.png" width="112" alt="OmniShell icon">
-</p>
-
-<h1 align="center">OmniShell</h1>
-
-<p align="center">
-  Twelve AI coding CLIs. One fast Windows terminal.
+  <img src="docs/images/omnishell-banner.png" width="100%" alt="OmniShell — AI coding tools in one Windows terminal">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Utku4836/OmniShell/actions/workflows/ci.yml"><img src="https://github.com/Utku4836/OmniShell/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/Utku4836/OmniShell/releases/latest"><img src="https://img.shields.io/github/v/release/Utku4836/OmniShell?style=flat-square&color=ff6427" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ff6427?style=flat-square" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-070707?style=flat-square&logo=windows&logoColor=white" alt="Windows 10 and 11">
+  <a href="https://github.com/Utku4836/OmniShell/releases/latest">Download for Windows</a> &nbsp; · &nbsp;
+  <a href="#supported-tools">Supported tools</a> &nbsp; · &nbsp;
+  <a href="#development">Build from source</a> &nbsp; · &nbsp;
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-OmniShell installs, opens, and isolates popular coding agents behind a single keyboard-friendly interface. Every custom profile gets its own CLI runtime, HOME, AppData, XDG directories, credentials, caches, configuration, and neutral workspace. Nothing silently falls back to a globally installed command.
+OmniShell is an open-source Windows desktop app for running AI coding CLIs. Choose a tool, create a profile, and sign in inside its terminal. You can keep personal and work accounts in separate local installations and switch between them from one interface.
 
-![OmniShell home screen](docs/omnishell-home.png)
+Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
 
-## What it gives you
+## Get started
 
-- **One terminal surface:** Real ConPTY sessions rendered by xterm.js with GPU acceleration.
-- **Local profile installs:** Every command is resolved only from the selected profile's own runtime directory.
-- **Explicit installation:** Select a missing CLI, then answer the inline <code>Install? YES NO</code> prompt.
-- **Visible progress:** Download stages and byte-based transfers render as a live <code>#</code> percentage bar.
-- **Named profiles:** Create and rename fully isolated accounts; custom profiles install independent binary/runtime trees.
-- **Reliable Windows launch:** npm command wrappers, executable paths containing spaces, resize races, stale sessions, and process-tree cancellation are handled explicitly.
-- **Predictable windows:** Switch CLI stays in the current window; New Window first asks which profile to open, and auxiliary windows close instead of becoming duplicate main menus.
-- **Useful failures:** Install output is cleaned for the UI while the full transcript remains available locally.
+Download **OmniShell.exe** from the [latest release](https://github.com/Utku4836/OmniShell/releases/latest). Run the portable executable, select a CLI, and confirm its installation. Then open a profile and sign in with the tool's own authentication flow.
 
-## Interface
+You need Windows 10 or 11. CLI subscriptions and API access are separate from OmniShell.
 
-<p>
-  <img src="docs/omnishell-context.png" width="49%" alt="OmniShell context menu">
-  <img src="docs/omnishell-terminal.png" width="49%" alt="Claude Code running inside OmniShell">
-</p>
+The portable package is around 300–400 MB. It uses store compression to reduce the extraction work at startup. Release binaries are unsigned, so Windows SmartScreen may ask you to confirm the first launch.
 
-The main surface uses the same ANSI Shadow lettering as the bundled icon. It has no blurred glow or decorative HUD. Selecting an installed CLI opens a compact profile picker where a named account can be opened, created, or renamed. The context menu shares the exact background, font, border, and accent tokens used by the main screen.
+![OmniShell home screen with the supported coding tools](docs/images/omnishell-overview.png)
 
-## Included CLIs
+## Profiles
 
-| Tool | Local installation source | Command |
-|---|---|---:|
-| [Claude Code](https://github.com/anthropics/claude-code) | <code>@anthropic-ai/claude-code</code> | <code>claude</code> |
-| [Codex](https://github.com/openai/codex) | <code>@openai/codex</code> | <code>codex</code> |
-| [OpenCode](https://github.com/anomalyco/opencode) | <code>opencode-ai</code> | <code>opencode</code> |
-| [Antigravity CLI](https://antigravity.google/docs/cli-install) | Official PowerShell bootstrap | <code>agy</code> |
-| [Aider](https://aider.chat/docs/install.html) | Official PowerShell bootstrap | <code>aider</code> |
-| [GitHub Copilot CLI](https://github.com/github/copilot-cli) | <code>@github/copilot</code> | <code>copilot</code> |
-| [Cursor Agent](https://prod.cursor.com/docs/cli/installation) | Official native Windows release | <code>cursor-agent</code> |
-| [Amp](https://ampcode.com/) | <code>@ampcode/cli</code> | <code>amp</code> |
-| [Goose](https://github.com/aaif-goose/goose) | Official Windows GitHub release | <code>goose</code> |
-| [Crush](https://github.com/charmbracelet/crush) | <code>@charmland/crush</code> | <code>crush</code> |
-| [Qwen Code](https://github.com/QwenLM/qwen-code) | <code>@qwen-code/qwen-code</code> | <code>qwen</code> |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | <code>@moonshot-ai/kimi-code</code> | <code>kimi</code> |
+Create a named profile for each account or workspace you want to keep separate. Each profile gets an independent CLI installation. Rename it without changing its storage path, or delete a custom profile by confirming a move to recoverable trash.
 
-OmniShell installs the CLI programs, not their subscriptions or API access. Authentication still happens inside each tool.
+In **Settings**, you can choose:
 
-## Download
+| Setting | Behavior |
+|---|---|
+| **Full Permission** | Start the CLI with its unattended or approval-bypass option. Off by default. |
+| **Shared Sessions** | Exchange session data with other opted-in profiles of the same CLI. |
+| **Shared Models** | Exchange the tool's supported model metadata or cache. |
+| **Shared Config** | Exchange the tool's supported configuration files. |
 
-Download **OmniShell.exe** from the [latest release](https://github.com/Utku4836/OmniShell/releases/latest) and run it. It is a portable executable; there is no setup wizard and no system-wide tool installation.
+![Example Personal and Work profiles, with launch and sharing settings](docs/images/omnishell-profiles.png)
 
-The release intentionally uses a larger, store-compressed portable package. The download is roughly 300–400 MB, but startup is much faster because Windows does not need to heavily decompress the Electron runtime on every cold launch.
+Sharing stays within one CLI family. A Codex profile can share with another Codex profile; it cannot share with Claude Code. Close a profile before opening another that uses the same shared category. Independent profiles can run at the same time.
 
-> [!NOTE]
-> Release binaries are currently unsigned. Windows SmartScreen may ask you to confirm the first launch.
+OmniShell excludes dedicated authentication files from sharing. Some tools store API keys inside general configuration files, so enable Shared Config only when you intend to share those settings. Turning sharing off keeps the profile's current local copy.
 
-### Run from source
+**Full Permission bypasses the selected CLI's approval prompts.** Enable it only for profiles and workspaces you trust. Profile separation organizes local data; it is not an operating-system security sandbox. CLIs still run with your Windows account permissions.
 
-Requirements: Windows 10/11 and Node.js 22.19 or newer.
+## Supported tools
 
-~~~powershell
-git clone https://github.com/Utku4836/OmniShell.git
-cd OmniShell
-.\start.bat
-~~~
+| Tool | Installation source |
+|---|---|
+| [Claude Code](https://github.com/anthropics/claude-code) | `@anthropic-ai/claude-code` |
+| [Codex](https://github.com/openai/codex) | `@openai/codex` |
+| [OpenCode](https://github.com/anomalyco/opencode) | `opencode-ai` |
+| [Antigravity CLI](https://antigravity.google/docs/cli-install) | Official PowerShell installer |
+| [Aider](https://aider.chat/docs/install.html) | Official PowerShell installer |
+| [GitHub Copilot CLI](https://github.com/github/copilot-cli) | `@github/copilot` |
+| [Cursor Agent](https://prod.cursor.com/docs/cli/installation) | Official Windows release |
+| [Amp](https://ampcode.com/) | `@ampcode/cli` |
+| [Goose](https://github.com/aaif-goose/goose) | Official Windows release |
+| [Crush](https://github.com/charmbracelet/crush) | `@charmland/crush` |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) | `@qwen-code/qwen-code` |
+| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | `@moonshot-ai/kimi-code` |
 
-The launcher installs the locked Electron dependencies on first run and then starts OmniShell.
+OmniShell resolves commands from the selected profile's runtime directory. Installers report progress in the interface and keep a local transcript for troubleshooting. An installation is marked ready only after OmniShell finds its expected executable.
 
-## Controls
+## Keyboard and window controls
 
 | Input | Action |
 |---|---|
-| Arrow keys or <code>J</code> / <code>K</code> | Move through the CLI grid |
-| <code>Enter</code> | Confirm install or open the selected CLI's profile picker |
-| <code>N</code> / <code>R</code> in the profile picker | Create or rename a profile |
-| <code>I</code> in the profile picker | Install the selected profile's isolated CLI runtime |
-| <code>U</code> | Start update/reinstall for the selected CLI |
-| <code>Esc</code> | Pass through to the active CLI |
-| <code>Enter</code> after a CLI exits | Restart the same CLI |
-| <code>Ctrl+C</code> with a selection | Copy selected terminal text |
-| <code>Ctrl+V</code> or <code>Ctrl+Shift+V</code> | Paste text into the active PTY |
-| Right-click | Open the minimal action menu |
-| <code>Close &lt;CLI&gt;</code> in the terminal menu | Return to the main window, or close an auxiliary CLI window |
-| <code>Ctrl+Alt+S</code> | Hide or restore OmniShell |
+| Arrow keys or `J` / `K` | Navigate the tool grid |
+| `Enter` | Confirm a choice or open the selected profile |
+| `N` / `R` in the profile picker | Create or rename a profile |
+| `S` in the profile picker | Open profile settings |
+| `I` in the profile picker | Install the selected profile's CLI |
+| `U` in the tool grid | Update or reinstall the selected CLI |
+| `Ctrl+C` with selected text | Copy the selection |
+| `Ctrl+V` or `Ctrl+Shift+V` | Paste into the terminal |
+| Right-click | Open window and session actions |
+| `Ctrl+Alt+S` | Hide or restore OmniShell |
 
-## Isolation model
+**Switch CLI** opens a profile picker in the current window. **New Window** asks which profile to open. Closing a session returns the main window to the tool grid; auxiliary session windows close. `Esc` stays with the active CLI. After a CLI exits, press `Enter` to restart it.
 
-~~~text
+## Local storage
+
+Source builds use the repository's `system/` directory. Packaged builds use `%APPDATA%\OmniShell\system`, unless you set `OMNISHELL_SYSTEM_ROOT`.
+
+```text
 system/
-├── _install/
-│   └── logs/                  full installer transcripts
+├── _install/logs/              Installer transcripts
 ├── _profiles/
-│   └── profiles.json          names mapped to stable profile IDs
-├── ClaudeCode/
-│   ├── .claude/               Claude profile
-│   ├── node_modules/          local CLI package
-│   └── Temp/
-├── Codex/
-│   ├── node_modules/          backward-compatible Default runtime
-│   ├── .codex/                backward-compatible Default profile
-│   └── profiles/
-│       └── p_<uuid>/
-│           ├── profile.json   readable name and layout descriptor
-│           ├── runtime/       independent CLI binary/package
-│           ├── .codex/        independent credentials/config
-│           ├── AppData/       independent Windows application data
-│           └── Temp/          independent temporary files
-└── KimiCode/
-    └── .kimi-code/            Default Kimi profile
-~~~
+│   ├── profiles.json          Profile names and settings
+│   └── trash/                 Recoverably deleted profiles
+└── Codex/                     One directory per CLI family
+    ├── .codex/                Default profile data
+    ├── node_modules/          Default CLI installation
+    ├── _shared/               Opt-in shared data
+    └── profiles/p_<uuid>/
+        ├── profile.json       Name, settings, and layout
+        ├── runtime/           Independent CLI installation
+        └── .codex/            Independent profile data
+```
 
-Provider secrets and global CLI profile variables are not copied into child environments. Each profile starts in <code>%APPDATA%\OmniShell\workspaces\&lt;tool&gt;\&lt;profile&gt;</code>, outside the source/runtime tree, so a CLI does not accidentally inherit OmniShell's Git branch. Aider also runs with Git discovery disabled in its empty profile.
-
-> [!IMPORTANT]
-> Profile isolation is not an operating-system security sandbox. A launched CLI still runs with your Windows account permissions and can access files or the network when you direct it to do so.
-
-## Installer guarantees
-
-1. Build a trusted install plan from the static tool registry.
-2. Download into a <code>.partial</code> file when a remote asset is involved.
-3. Report real byte progress when the server exposes a content length.
-4. Keep one active installer per tool/profile pair; other windows subscribe to that exact job.
-5. Verify the expected executable inside the isolated directory.
-6. Reject a zero exit code when the command is still missing.
-7. Preserve the complete profile-specific log under <code>system/_install/logs/</code>.
-
-Cursor's official bootstrap is parsed only to resolve its current release. OmniShell downloads and extracts the release itself, avoiding the bootstrap's user-PATH mutation.
-
-## Performance work
-
-The runtime includes verified optimizations that do not change tool behavior:
-
-- constant-time tool lookup maps in the main and renderer processes;
-- lazy creation of per-tool directory trees;
-- one-pass installer-log discovery with an in-memory cache;
-- 64 KiB buffered log writes instead of synchronous writes per chunk;
-- coalesced and deduplicated installer IPC;
-- 8 ms / 64 KiB PTY output batching;
-- keyed incremental row rendering;
-- animation-frame batching for DOM state and install progress;
-- delegated grid event handlers;
-- resize-observed, single-frame terminal fitting;
-- lazy xterm creation;
-- GPU WebGL rendering with context-loss fallback;
-- CSS layout/paint containment;
-- bounded terminal query and output buffers.
+Profiles also receive separate HOME, AppData, XDG, and temporary directories. They start in neutral workspaces under `%APPDATA%\OmniShell\workspaces`, outside the application source tree. Deleting a custom profile moves its data to trash; the Default profile cannot be deleted.
 
 ## Development
 
-~~~powershell
+Install Node.js 22.19 or newer, then clone the repository:
+
+```powershell
+git clone https://github.com/Utku4836/OmniShell.git
+cd OmniShell
+.\start.bat
+```
+
+The launcher installs the locked dependencies on first run. For development commands:
+
+```powershell
 cd app
 npm ci
 npm run check
-npm run health   # requires all CLIs to be installed locally
+npm test
+npm run test:ui
+npm run health
 npm run dist
-~~~
+```
 
-<code>npm run check</code> validates the JavaScript sources used by the main process, preload bridge, renderer, installers, terminal query handling, and health command. Windows CI also parses every PowerShell installer and builds the portable executable.
+The UI smoke command uses temporary profiles and hidden Electron windows. The health command requires local CLI installations and checks their version commands through ConPTY. The portable build is written to `dist/`.
 
-<code>npm run health</code> starts every installed CLI through the same ConPTY path OmniShell uses and verifies its <code>--version</code> command.
+To regenerate the README artwork from the app's interface, run `npm run docs:assets` on Windows. The capture uses example profiles in a temporary directory and writes the images to `docs/images/`.
 
-## Repository layout
-
-~~~text
-app/
-├── assets/       icon, tray image, and bundled font license
-├── lib/          tool registry, installer runtime, PTY helpers
-├── renderer/     minimal interface and xterm surface
-└── scripts/      trusted Windows installers and the ConPTY health command
-docs/             verified application screenshots
-system/           ignored runtime profiles and downloads
-~~~
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions and [SECURITY.md](SECURITY.md) for reporting a security issue.
 
 ## License
 
-[MIT](LICENSE) © 2026 Utku4836
+[MIT](LICENSE) · Utku4836

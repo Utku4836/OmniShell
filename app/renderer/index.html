@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#000000">
   <title>OmniShell</title>
@@ -53,6 +53,7 @@
         <div id="profile-editor" class="profile-editor hidden">
           <label id="profile-editor-label" for="profile-name">Profile name</label>
           <input id="profile-name" type="text" maxlength="40" autocomplete="off" spellcheck="false">
+          <div id="profile-create-settings" class="profile-settings-options hidden" aria-label="New profile settings"></div>
           <div class="profile-editor-actions">
             <button id="profile-save" type="button">SAVE</button>
             <button id="profile-cancel" type="button">CANCEL</button>
@@ -61,7 +62,16 @@
         <div class="profile-actions">
           <button id="profile-new" type="button">+ NEW</button>
           <button id="profile-rename" type="button">RENAME</button>
+          <button id="profile-settings-open" type="button">SETTINGS</button>
           <button id="profile-install" class="hidden" type="button">INSTALL</button>
+        </div>
+        <div id="profile-settings" class="profile-settings hidden">
+          <div id="profile-settings-options" class="profile-settings-options" aria-label="Profile settings"></div>
+          <div class="profile-settings-actions">
+            <button id="profile-settings-save" type="button">SAVE</button>
+            <button id="profile-settings-cancel" type="button">CANCEL</button>
+            <button id="profile-delete" class="profile-delete" type="button">DELETE</button>
+          </div>
         </div>
         <p id="profile-status" role="status" aria-live="polite"></p>
       </section>

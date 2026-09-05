@@ -18,13 +18,16 @@ const {
   prepareAllTools,
   prepareProfileDirectories,
   prepareToolDirectories,
+  profileDir,
   resolveLocalExecutable,
   toolDir
 } = require('./lib/tooling')
-const { DEFAULT_PROFILE_ID, ProfileStore, validateProfileId } = require('./lib/profile-store')
+const { DEFAULT_PROFILE_ID, ProfileStore, normalizeProfileSettings, validateProfileId } = require('./lib/profile-store')
 const { PtyRegistry } = require('./lib/pty-registry')
 const { collectTerminalResponses } = require('./lib/terminal-queries')
 const { createInstallReporter, findLatestInstallLogs, terminateProcessTree } = require('./lib/install-runtime')
+const { hydrateSharedProfileData, persistSharedProfileData, sharingCapabilities } = require('./lib/profile-sharing')
+const { prepareProfileLaunch } = require('./lib/profile-launch')
 
 const windows = new Set()
 const ptyRegistry = new PtyRegistry((proc) => {
@@ -37,9 +40,15 @@ const installHistory = new Map()
 const sendTargets = new Map()
 const visualTestMode = process.env.OMNISHELL_VISUAL_TEST === '1'
 const profileStore = new ProfileStore(SYSTEM_ROOT)
+const terminalLaunches = new Map()
+const closingProfiles = new Map()
+const pendingProfileWrites = new Set()
+const editingProfiles = new Set()
 
 let tray = null
 let installHistoryLoaded = false
+let quitting = false
+let quitReady = false
 
 app.setName('OmniShell')
 app.setAppUserModelId('OmniShell')
@@ -92,12 +101,51 @@ function profilesWithInstallState(tool, profiles) {
   }))
 }
 
+function profileHasActiveSession(toolId, profileId) {
+  return ptyRegistry.entries().some(([, session]) => session.toolId === toolId && session.profileId === profileId)
+    || [...terminalLaunches.values()].some((launch) => launch.toolId === toolId && launch.profileId === profileId)
+    || closingProfiles.has(profileInstallKey(toolId, profileId))
+    || editingProfiles.has(profileInstallKey(toolId, profileId))
+}
+
+function profilesConflict(left, right) {
+  if (left.id === right.id) return true
+  return ['sharedSessions', 'sharedModels', 'sharedConfig'].some((key) => left.settings?.[key] && right.settings?.[key])
+}
+
+function persistSessionProfile(session) {
+  if (!session) return Promise.resolve()
+  if (session.persistPromise) return session.persistPromise
+  session.persistPromise = persistSharedProfileData(session.tool, session.profile, SYSTEM_ROOT)
+  pendingProfileWrites.add(session.persistPromise)
+  session.persistPromise.catch((error) => {
+    console.error(`[PROFILE SHARE] ${String(error.message || error)}`)
+  }).finally(() => {
+    pendingProfileWrites.delete(session.persistPromise)
+  })
+  return session.persistPromise
+}
+
+function finishSessionProfile(session) {
+  if (session.finishPromise) return session.finishPromise
+  const key = profileInstallKey(session.toolId, session.profileId)
+  session.finishPromise = session.exited.then(() => persistSessionProfile(session))
+  closingProfiles.set(key, session.finishPromise)
+  session.finishPromise.catch((error) => {
+    console.error(`[PROFILE CLOSE] ${String(error.message || error)}`)
+  }).finally(() => {
+    if (closingProfiles.get(key) === session.finishPromise) closingProfiles.delete(key)
+  })
+  return session.finishPromise
+}
+
 function writeProfileDescriptor(tool, profile) {
   if (!profile || profile.id === DEFAULT_PROFILE_ID) return
   const root = prepareProfileDirectories(tool, profile.id)
   fs.writeFileSync(path.join(root, 'profile.json'), JSON.stringify({
     id: profile.id,
     name: profile.name,
+    settings: profile.settings,
     updatedAt: profile.updatedAt,
     data: '.',
     runtime: 'runtime'
@@ -263,7 +311,7 @@ function createWindow(initialContext = null) {
 
   newWin.on('closed', () => {
     clearTimeout(shapeTimer)
-    killPtyForSender(webContentsId)
+    killPtyForSender(webContentsId).catch((error) => console.error(`[PROFILE CLOSE] ${String(error.message || error)}`))
     for (const job of installJobs.values()) job.subscribers.delete(webContentsId)
     windows.delete(newWin)
     sendTargets.delete(webContentsId)
@@ -274,11 +322,17 @@ function createWindow(initialContext = null) {
 }
 
 function killPtyForSender(senderId) {
+  const launch = terminalLaunches.get(senderId)
+  terminalLaunches.delete(senderId)
+  const session = ptyRegistry.get(senderId)
+  const finished = session ? finishSessionProfile(session) : Promise.resolve()
   ptyRegistry.kill(senderId)
+  return Promise.all([finished, launch?.finished])
 }
 
 function killAllPtys() {
-  ptyRegistry.killAll()
+  const senderIds = new Set([...terminalLaunches.keys(), ...ptyRegistry.entries().map(([senderId]) => senderId)])
+  return [...senderIds].map(killPtyForSender)
 }
 
 function createTray() {
@@ -358,14 +412,14 @@ ipcMain.handle('window:open-tool', async (event, toolId, profileId = null) => {
 ipcMain.handle('profiles:list', async (event, toolId) => {
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found', profiles: [] }
-  return { ok: true, profiles: profilesWithInstallState(tool, await profileStore.list(tool.id)) }
+  return { ok: true, profiles: profilesWithInstallState(tool, await profileStore.list(tool.id)), capabilities: sharingCapabilities(tool.id) }
 })
 
-ipcMain.handle('profiles:create', async (event, toolId, name) => {
+ipcMain.handle('profiles:create', async (event, toolId, name, settings = {}) => {
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found' }
   try {
-    const profile = await profileStore.create(tool.id, name)
+    const profile = await profileStore.create(tool.id, name, settings)
     prepareProfileDirectories(tool, profile.id)
     writeProfileDescriptor(tool, profile)
     return { ok: true, profile: { ...profile, installed: false } }
@@ -383,6 +437,58 @@ ipcMain.handle('profiles:rename', async (event, toolId, profileId, name) => {
     return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) } }
   } catch (error) {
     return { ok: false, error: String(error.message || error) }
+  }
+})
+
+ipcMain.handle('profiles:update-settings', async (event, toolId, profileId, settings) => {
+  const tool = findTool(toolId)
+  if (!tool) return { ok: false, error: 'Tool not found' }
+  if (profileHasActiveSession(tool.id, profileId)) return { ok: false, error: 'Close this profile before changing its settings' }
+  const key = profileInstallKey(tool.id, profileId)
+  editingProfiles.add(key)
+  try {
+    const previous = await profileStore.get(tool.id, profileId)
+    if (!previous) return { ok: false, error: 'Profile not found' }
+    // Opting in consumes the shared copy; a stale local profile must not replace it.
+    await hydrateSharedProfileData(tool, { ...previous, settings: normalizeProfileSettings(settings) }, SYSTEM_ROOT)
+    const profile = await profileStore.updateSettings(tool.id, profileId, settings)
+    writeProfileDescriptor(tool, profile)
+    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) } }
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  } finally {
+    editingProfiles.delete(key)
+  }
+})
+
+ipcMain.handle('profiles:delete', async (event, toolId, profileId) => {
+  const tool = findTool(toolId)
+  if (!tool) return { ok: false, error: 'Tool not found' }
+  if (profileId === DEFAULT_PROFILE_ID) return { ok: false, error: 'The Default profile cannot be deleted' }
+  if (profileHasActiveSession(tool.id, profileId)) return { ok: false, error: 'Close this profile before deleting it' }
+  if (installJobs.has(profileInstallKey(tool.id, profileId))) return { ok: false, error: 'Cancel the profile installation before deleting it' }
+  const key = profileInstallKey(tool.id, profileId)
+  editingProfiles.add(key)
+  let source
+  let destination
+  try {
+    const profile = await profileStore.get(tool.id, profileId)
+    if (!profile) return { ok: false, error: 'Profile not found' }
+    source = profileDir(tool, profile.id, SYSTEM_ROOT)
+    destination = path.join(SYSTEM_ROOT, '_profiles', 'trash', tool.id, `${profile.id}-${Date.now()}`)
+    if (fs.existsSync(source)) {
+      await fs.promises.mkdir(path.dirname(destination), { recursive: true })
+      await fs.promises.rename(source, destination)
+    }
+    await profileStore.delete(tool.id, profile.id)
+    return { ok: true, deletedProfile: profile, recoverablePath: destination }
+  } catch (error) {
+    if (source && destination && fs.existsSync(destination) && !fs.existsSync(source)) {
+      try { await fs.promises.rename(destination, source) } catch (rollbackError) {}
+    }
+    return { ok: false, error: String(error.message || error) }
+  } finally {
+    editingProfiles.delete(key)
   }
 })
 
@@ -467,6 +573,7 @@ ipcMain.handle('tool:install', async (event, id, profileId = DEFAULT_PROFILE_ID)
   }
   if (!profile) return { ok: false, error: 'Profile not found' }
   const jobKey = profileInstallKey(tool.id, profile.id)
+  if (profileHasActiveSession(tool.id, profile.id)) return { ok: false, error: 'Close this profile before installing or updating it' }
 
   if (!tool.installer) {
     safeSend(event.sender.id, 'install:done', {
@@ -593,38 +700,65 @@ ipcMain.handle('tool:cancel-install', (event, id, profileId = DEFAULT_PROFILE_ID
   return { ok: true }
 })
 
-ipcMain.handle('terminal:stop', (event) => {
-  killPtyForSender(event.sender.id)
-  return { ok: true }
+ipcMain.handle('terminal:stop', async (event) => {
+  try {
+    await killPtyForSender(event.sender.id)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  }
 })
 
 ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_ID, cols, rows, pixelWidth, pixelHeight) => {
   const senderId = event.sender.id
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
-  const profile = await profileStore.get(tool.id, profileId)
-  if (!profile) return { ok: false, error: 'Profile not found' }
-
-  killPtyForSender(senderId)
-
-  prepareProfileDirectories(tool, profile.id)
-  const cwd = profileWorkspaceDir(tool, profile.id)
-
-  const startCols = Number.isInteger(cols) ? Math.max(11, Math.min(cols, 1000)) : 90
-  const startRows = Number.isInteger(rows) ? Math.max(6, Math.min(rows, 500)) : 28
-  const startPixelWidth = Number.isInteger(pixelWidth) ? Math.max(1, Math.min(pixelWidth, 16384)) : startCols * 9
-  const startPixelHeight = Number.isInteger(pixelHeight) ? Math.max(1, Math.min(pixelHeight, 16384)) : startRows * 18
-  let launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
-  if (!launchExe) return { ok: false, error: 'The isolated local installation was not found' }
-
+  if (quitting) return { ok: false, error: 'OmniShell is closing' }
+  const previousSessionClosed = killPtyForSender(senderId)
+  let completeLaunch
+  const launch = { toolId: tool.id, profileId, finished: new Promise((resolve) => { completeLaunch = resolve }) }
+  terminalLaunches.set(senderId, launch)
+  const isCurrentLaunch = () => terminalLaunches.get(senderId) === launch && !event.sender.isDestroyed() && !quitting
   try {
+    await previousSessionClosed
+    if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
+    const profile = await profileStore.get(tool.id, profileId)
+    if (!profile) return { ok: false, error: 'Profile not found' }
+    await Promise.all([...closingProfiles].filter(([key]) => key.startsWith(`${tool.id}\u0000`)).map(([, finished]) => finished))
+    if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
+    if (editingProfiles.has(profileInstallKey(tool.id, profile.id))) return { ok: false, error: 'Wait for this profile change to finish' }
+    if (installJobs.has(profileInstallKey(tool.id, profile.id))) return { ok: false, error: 'Wait for this profile installation to finish' }
+    const busyProfiles = [
+      ...ptyRegistry.entries().map(([, session]) => session),
+      ...[...terminalLaunches.values()].filter((candidate) => candidate !== launch && candidate.profile)
+    ]
+    if (busyProfiles.some((candidate) => candidate.toolId === tool.id && profilesConflict(profile, candidate.profile))) {
+      return { ok: false, error: 'Close the active profile using this profile or its shared data before opening it here' }
+    }
+    launch.profile = profile
+
+    prepareProfileDirectories(tool, profile.id)
+    const cwd = profileWorkspaceDir(tool, profile.id)
+    await hydrateSharedProfileData(tool, profile, SYSTEM_ROOT)
+    if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
+
+    const startCols = Number.isInteger(cols) ? Math.max(11, Math.min(cols, 1000)) : 90
+    const startRows = Number.isInteger(rows) ? Math.max(6, Math.min(rows, 500)) : 28
+    const startPixelWidth = Number.isInteger(pixelWidth) ? Math.max(1, Math.min(pixelWidth, 16384)) : startCols * 9
+    const startPixelHeight = Number.isInteger(pixelHeight) ? Math.max(1, Math.min(pixelHeight, 16384)) : startRows * 18
+    const launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
+    if (!launchExe) return { ok: false, error: 'The isolated local installation was not found' }
+
     const pty = require('node-pty')
-    const ptyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile.id)
+    const basePtyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile.id)
+    const launchPolicy = await prepareProfileLaunch(tool, profile, profileDir(tool, profile.id, SYSTEM_ROOT), basePtyEnv)
+    if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
+    const ptyEnv = launchPolicy.env
     ptyEnv.PWD = cwd
     ptyEnv.INIT_CWD = cwd
     ptyEnv.GIT_CEILING_DIRECTORIES = path.join(app.getPath('userData'), 'workspaces')
     ptyEnv.OMNISHELL_PROFILE_WORKSPACE = cwd
-    let launchArgs = []
+    const launchArgs = launchPolicy.args
 
     const spawnOpts = {
       name: 'xterm-256color',
@@ -638,10 +772,10 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
 
     let ptyProc
     const comspec = process.env.ComSpec || 'cmd.exe'
-    if (launchArgs.length > 0) {
+    if (launchExe && (launchExe.toLowerCase().endsWith('.cmd') || launchExe.toLowerCase().endsWith('.bat'))) {
+      ptyProc = pty.spawn(comspec, ['/d', '/s', '/c', 'call', launchExe, ...launchArgs], spawnOpts)
+    } else if (launchArgs.length > 0) {
       ptyProc = pty.spawn(launchExe, launchArgs, spawnOpts)
-    } else if (launchExe && (launchExe.toLowerCase().endsWith('.cmd') || launchExe.toLowerCase().endsWith('.bat'))) {
-      ptyProc = pty.spawn(comspec, ['/d', '/s', '/c', 'call', launchExe], spawnOpts)
     } else if (fs.existsSync(launchExe)) {
       ptyProc = pty.spawn(launchExe, [], spawnOpts)
     } else {
@@ -649,6 +783,8 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     }
 
     let session = null
+    let resolveExit
+    const exited = new Promise((resolve) => { resolveExit = resolve })
     const earlyData = []
     let earlyExit = null
 
@@ -675,6 +811,8 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
         earlyExit = { exitCode }
         return
       }
+      resolveExit()
+      finishSessionProfile(session)
       flushPtyOutput(senderId, session)
       if (ptyRegistry.deleteIfCurrent(senderId, session)) {
         safeSend(senderId, 'pty:exit', { sessionId: session.id, exitCode })
@@ -691,6 +829,11 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
       id: randomUUID(),
       toolId: tool.id,
       profileId: profile.id,
+      tool,
+      profile,
+      exited,
+      persistPromise: null,
+      finishPromise: null,
       terminalBackground: (tool.terminalBackground || '#000000').replace('#', ''),
       proc: ptyProc,
       cols: startCols,
@@ -708,6 +851,9 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     return { ok: true, sessionId: session.id, profile }
   } catch (err) {
     return { ok: false, error: String(err.message || err) }
+  } finally {
+    if (terminalLaunches.get(senderId) === launch) terminalLaunches.delete(senderId)
+    completeLaunch()
   }
 })
 
@@ -784,8 +930,19 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', (event) => {
+  if (quitReady) return
+  event.preventDefault()
+  if (quitting) return
+  quitting = true
+  const closing = killAllPtys()
+  Promise.allSettled([...closing, ...closingProfiles.values(), ...pendingProfileWrites]).then(() => {
+    quitReady = true
+    app.quit()
+  })
+})
+
 app.on('will-quit', () => {
-  killAllPtys()
   for (const job of installJobs.values()) {
     job.cancelled = true
     terminateProcessTree(job.proc)

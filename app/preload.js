@@ -7,8 +7,10 @@ contextBridge.exposeInMainWorld('api', {
   cancelInstall: (id, profileId) => ipcRenderer.invoke('tool:cancel-install', id, profileId),
   openToolFolder: (id, kind, profileId) => ipcRenderer.invoke('tool:open-folder', id, kind, profileId),
   profiles: (toolId) => ipcRenderer.invoke('profiles:list', toolId),
-  createProfile: (toolId, name) => ipcRenderer.invoke('profiles:create', toolId, name),
+  createProfile: (toolId, name, settings) => ipcRenderer.invoke('profiles:create', toolId, name, settings),
   renameProfile: (toolId, profileId, name) => ipcRenderer.invoke('profiles:rename', toolId, profileId, name),
+  updateProfileSettings: (toolId, profileId, settings) => ipcRenderer.invoke('profiles:update-settings', toolId, profileId, settings),
+  deleteProfile: (toolId, profileId) => ipcRenderer.invoke('profiles:delete', toolId, profileId),
   onInstallProgress: (cb) => {
     const handler = (e, d) => cb(d)
     ipcRenderer.on('install:progress', handler)
