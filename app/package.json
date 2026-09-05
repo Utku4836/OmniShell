@@ -29,7 +29,7 @@
     "check": "node --check main.js && node --check preload.js && node --check renderer/renderer.js && node --check lib/tooling.js && node --check lib/profile-store.js && node --check lib/profile-sharing.js && node --check lib/profile-launch.js && node --check lib/install-runtime.js && node --check lib/pty-registry.js && node --check lib/terminal-queries.js && node --check scripts/generate-brand-assets.js && node --check scripts/tool-pty-health.js"
   },
   "devDependencies": {
-    "electron": "^43.4.1",
+    "electron": "^44.1.1",
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
