@@ -99,6 +99,10 @@ let contextCloseAnimation = null
 let resizeState = null
 let resizeFrame = 0
 let pendingResizeBounds = null
+let carouselFrame = 0
+let carouselShouldCenter = false
+let viewTransitionToken = 0
+let viewAnimations = []
 
 function getTool(id) {
   return toolById.get(id) || null
@@ -174,6 +178,31 @@ function flushRows() {
   updateDeckStatus()
 }
 
+function flushCarousel() {
+  carouselFrame = 0
+  const selectedIndex = Math.max(0, tools.findIndex((tool) => tool.id === selectedToolId))
+  for (let index = 0; index < tools.length; index += 1) {
+    const row = rows.get(tools[index].id)
+    if (!row) continue
+    const distance = Math.abs(index - selectedIndex)
+    row.item.dataset.distance = String(Math.min(2, distance))
+    row.item.dataset.direction = index < selectedIndex ? 'above' : (index > selectedIndex ? 'below' : 'current')
+  }
+  if (carouselShouldCenter) {
+    rows.get(selectedToolId)?.item.scrollIntoView({
+      block: 'center',
+      inline: 'nearest',
+      behavior: reducedMotion.matches ? 'auto' : 'smooth'
+    })
+  }
+  carouselShouldCenter = false
+}
+
+function queueCarousel(center = false) {
+  carouselShouldCenter ||= center
+  if (!carouselFrame) carouselFrame = requestAnimationFrame(flushCarousel)
+}
+
 function queueRows(ids = tools.map((tool) => tool.id)) {
   for (const id of ids) dirtyRows.add(id)
   if (!renderFrame) renderFrame = requestAnimationFrame(flushRows)
@@ -232,13 +261,15 @@ function buildToolGrid() {
   })
   listScroll.replaceChildren(fragment)
   queueRows()
+  queueCarousel(true)
 }
 
 function selectTool(id, focus = false) {
   if (!toolById.has(id)) return
   const previous = selectedToolId
   if (previous === id) {
-    if (focus) { rows.get(id)?.item.focus({ preventScroll: true }); rows.get(id)?.item.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
+    if (focus) rows.get(id)?.item.focus({ preventScroll: true })
+    queueCarousel(focus)
     return
   }
   if (previous && previous !== id && states.get(previous)?.state === 'confirm') {
@@ -252,18 +283,19 @@ function selectTool(id, focus = false) {
   }
   selectedToolId = id
   queueRows([previous, id].filter(Boolean))
-  if (focus) { rows.get(id)?.item.focus({ preventScroll: true }); rows.get(id)?.item.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
+  queueCarousel(focus)
+  if (focus) rows.get(id)?.item.focus({ preventScroll: true })
 }
 
 function gridColumns() {
-  const template = getComputedStyle(listScroll).gridTemplateColumns
-  return Math.max(1, template.split(' ').filter(Boolean).length)
+  return 1
 }
 
 function moveSelection(horizontal, vertical) {
   if (!tools.length) return
   const index = Math.max(0, tools.findIndex((tool) => tool.id === selectedToolId))
-  const nextIndex = Math.max(0, Math.min(tools.length - 1, index + horizontal + (vertical * gridColumns())))
+  const direction = vertical || horizontal
+  const nextIndex = Math.max(0, Math.min(tools.length - 1, index + direction))
   selectTool(tools[nextIndex].id, true)
 }
 
@@ -320,12 +352,48 @@ async function pasteClipboard() {
   return true
 }
 
-function showView(name) {
+function showView(name, immediate = false) {
+  const previousName = currentView
+  const entering = name === 'list' ? viewList : viewTerminal
+  const leaving = name === 'list' ? viewTerminal : viewList
+  const token = ++viewTransitionToken
+  for (const animation of viewAnimations) animation.cancel()
+  viewAnimations = []
   currentView = name
-  viewList.classList.toggle('hidden', name !== 'list')
-  viewTerminal.classList.toggle('hidden', name !== 'terminal')
-  if (name === 'list') scheduleBrandFit()
-  else scheduleFit()
+  entering.classList.remove('hidden')
+  if (name === 'list') {
+    scheduleBrandFit()
+    queueCarousel(true)
+  } else {
+    scheduleFit()
+  }
+  if (previousName === name || immediate || reducedMotion.matches || typeof entering.animate !== 'function') {
+    leaving.classList.add('hidden')
+    return Promise.resolve()
+  }
+  leaving.classList.remove('hidden')
+  const direction = name === 'terminal' ? 1 : -1
+  const enterAnimation = entering.animate([
+    { opacity: 0, transform: `translateY(${direction * 10}px) scale(0.992)` },
+    { opacity: 1, transform: 'translateY(0) scale(1)' }
+  ], { duration: 190, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' })
+  const leaveAnimation = leaving.animate([
+    { opacity: 1, transform: 'translateY(0) scale(1)' },
+    { opacity: 0, transform: `translateY(${direction * -6}px) scale(0.996)` }
+  ], { duration: 125, easing: 'ease-in', fill: 'both' })
+  viewAnimations = [enterAnimation, leaveAnimation]
+  return Promise.allSettled([enterAnimation.finished, leaveAnimation.finished]).then(() => {
+    if (token !== viewTransitionToken) return
+    leaving.classList.add('hidden')
+    enterAnimation.cancel()
+    leaveAnimation.cancel()
+    viewAnimations = []
+    if (name === 'terminal') {
+      scheduleFit()
+      scheduleTerminalSurfaceSync()
+      terminal?.focus()
+    }
+  })
 }
 
 function profileDialogTool() {
@@ -1062,14 +1130,16 @@ async function leaveTerminal() {
   terminalCursorTimer = null
   cancelAnimationFrame(terminalSurfaceTimer)
   terminalSurfaceTimer = null
-  await window.api.terminalStop()
+  const stop = window.api.terminalStop()
   if (isAuxiliaryWindow) {
     window.api.closeWindow()
     return
   }
-  showView('list')
+  const transition = showView('list')
+  await Promise.allSettled([stop, transition])
   clearTerminalSurface()
   queueRows()
+  queueCarousel(true)
   rows.get(selectedToolId)?.item.focus({ preventScroll: true })
 }
 
@@ -1158,7 +1228,14 @@ function setupIpcListeners() {
     if (activeSessionId !== null && sessionId !== activeSessionId) return
     activeSessionId = null
     terminalExited = true
-    leaveTerminal().catch((error) => showToast(String(error.message || error)))
+    clearTimeout(terminalCursorTimer)
+    terminalCursorTimer = null
+    const closeHint = isAuxiliaryWindow ? 'right-click Close window' : 'right-click Close CLI'
+    terminal.write(
+      `\r\n\x1b[38;2;255;100;39m[Session ended / exit ${exitCode}]\x1b[0m\r\n` +
+      `\x1b[90mPress Enter to restart or ${closeHint}.\x1b[0m\r\n`,
+      scheduleTerminalSurfaceSync
+    )
   })
 }
 

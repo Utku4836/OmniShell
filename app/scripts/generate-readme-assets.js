@@ -72,6 +72,7 @@ async function poster(name, height, body) {
   win.setContentSize(1440, 850)
   await delay(250)
   await js('selectTool("codex"); fitBrandTitle()')
+  await delay(240)
   const ascii = await js('brandTitle.textContent')
   const home = (await win.webContents.capturePage()).toDataURL()
 
