@@ -11,7 +11,7 @@
 
 OmniShell is an open-source Windows desktop app for running AI coding CLIs. Choose a tool, create a profile, and sign in inside its terminal. You can keep personal and work accounts in separate local installations and switch between them from one interface.
 
-The home screen keeps the ASCII wordmark above a compact two-column tool list. Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
+The home screen places a focused vertical tool list on the left and keeps the ASCII wordmark on the right. The selected CLI appears at full size, its neighbors remain close, and distant entries recede without leaving the keyboard flow. Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
 
 ## Get started
 
@@ -78,7 +78,7 @@ OmniShell resolves commands from the selected profile's runtime directory. Insta
 | Right-click | Open window and session actions |
 | `Ctrl+Alt+S` | Hide or restore OmniShell |
 
-**Switch CLI** keeps your current session open and launches the selected profile in a new window. Selecting an already running profile brings its window forward. When a CLI exits, the primary window returns to the home screen and auxiliary windows close. Use **Minimize** in the context menu to send a window to the taskbar. `Esc` stays with the active CLI.
+**Switch CLI** keeps your current session open and launches the selected profile in a new window. Selecting an already running profile brings its window forward. When a CLI exits, every window keeps a visible session-ended message; press `Enter` to restart or close the window from its context menu. Use **Minimize** to send a window to the taskbar. `Esc` stays with the active CLI.
 
 ## Local storage
 

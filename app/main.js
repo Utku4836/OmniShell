@@ -942,7 +942,7 @@ app.whenReady().then(() => {
     }
     const focused = BrowserWindow.getFocusedWindow()
     if (focused && focused.isVisible()) {
-      focused.hide()
+      animateWindow(focused, 'hide', () => focused.hide())
     } else {
       for (const w of windows) {
         if (!w.isDestroyed()) {
