@@ -46,6 +46,7 @@ async function poster(name, height, body) {
   if (!scratch) throw new Error('Run this generator through npm run docs:assets')
   await fs.mkdir(output, { recursive: true })
   await fs.mkdir(working, { recursive: true })
+  process.env.OMNISHELL_DISABLE_AUTO_UPDATE = '1'
   app.setPath('userData', path.join(scratch, 'userdata'))
   process.env.OMNISHELL_SYSTEM_ROOT = path.join(scratch, 'system')
   BrowserWindow.prototype.show = function () {}

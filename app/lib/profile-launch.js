@@ -73,6 +73,18 @@ async function prepareProfileLaunch(tool, profile, profileRoot, baseEnv) {
     env.AIDER_LLM_HISTORY_FILE = path.join(historyRoot, 'llm.history')
   }
   if (tool.id === 'qwen') await restoreQwenPermission(profileRoot)
+  if (tool.id === 'claude') {
+    const settings = await readJson(path.join(profileRoot, '.claude', 'settings.json'))
+    const effort = settings.effortLevel
+    const args = enabled ? [...FULL_PERMISSION_ARGS.claude] : []
+    if (['low', 'medium', 'high', 'xhigh'].includes(effort)) args.push('--effort', effort)
+    return { args, env }
+  }
+  if (tool.id === 'amp' && !enabled) {
+    const configRoot = path.join(profileRoot, '.config', 'amp')
+    const legacy = path.join(configRoot, 'amp.json')
+    env.AMP_SETTINGS_FILE = await readJson(legacy, null) ? legacy : path.join(configRoot, 'settings.json')
+  }
   if (!enabled) return { args: [], env }
   if (tool.id === 'goose') {
     env.GOOSE_MODE = 'auto'
@@ -82,4 +94,23 @@ async function prepareProfileLaunch(tool, profile, profileRoot, baseEnv) {
   return { args: [...(FULL_PERMISSION_ARGS[tool.id] || [])], env }
 }
 
-module.exports = { FULL_PERMISSION_ARGS, prepareProfileLaunch }
+async function finalizeProfileLaunch(tool, profileRoot) {
+  if (tool.id !== 'amp') return
+  const configRoot = path.join(profileRoot, '.config', 'amp')
+  const generatedPath = path.join(configRoot, 'omnishell-full-permission.json')
+  const changed = await readJson(generatedPath, null)
+  if (!changed) return
+  const legacyPath = path.join(configRoot, 'amp.json')
+  const legacy = await readJson(legacyPath, null)
+  const basePath = legacy ? legacyPath : path.join(configRoot, 'settings.json')
+  const base = legacy || await readJson(basePath)
+  const generatedStat = await fsp.stat(generatedPath)
+  const baseStat = await fsp.stat(basePath).catch((error) => { if (error.code === 'ENOENT') return null; throw error })
+  if (baseStat && baseStat.mtimeMs > generatedStat.mtimeMs + 1) { await fsp.rm(generatedPath, { force: true }); return }
+  if (Object.prototype.hasOwnProperty.call(base, 'amp.dangerouslyAllowAll')) changed['amp.dangerouslyAllowAll'] = base['amp.dangerouslyAllowAll']
+  else delete changed['amp.dangerouslyAllowAll']
+  await writeJson(basePath, changed)
+  await fsp.rm(generatedPath, { force: true })
+}
+
+module.exports = { FULL_PERMISSION_ARGS, prepareProfileLaunch, finalizeProfileLaunch }

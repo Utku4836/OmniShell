@@ -160,6 +160,19 @@ function terminateProcessTree(proc, platform = process.platform, spawnProcess = 
   }
 }
 
+function stopPtyGracefully(proc, exited, graceMs = 1500) {
+  if (!exited) return terminateProcessTree(proc)
+  let finished = false
+  const interrupt = () => { if (!finished) { try { proc.write('\x03') } catch (error) {} } }
+  interrupt()
+  const second = setTimeout(interrupt, 250)
+  const force = setTimeout(() => { if (!finished) terminateProcessTree(proc) }, graceMs)
+  second.unref?.()
+  force.unref?.()
+  exited.then(() => { finished = true; clearTimeout(second); clearTimeout(force) })
+  return true
+}
+
 module.exports = {
   PROGRESS_PREFIX,
   cleanInstallLine,
@@ -167,5 +180,6 @@ module.exports = {
   findLatestInstallLog,
   findLatestInstallLogs,
   parseInstallProgressLine,
-  terminateProcessTree
+  terminateProcessTree,
+  stopPtyGracefully
 }

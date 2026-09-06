@@ -20,7 +20,8 @@ const TOOLS = [
     dir: 'Antigravity',
     bin: 'agy',
     installer: {
-      type: 'powershell-script',
+      type: 'agy-release',
+      manifest: 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json',
       url: 'https://antigravity.google/cli/install.ps1',
       args: ['--skip-path', '--skip-aliases']
     }
@@ -116,6 +117,10 @@ function executableCandidates(tool, systemRoot = SYSTEM_ROOT, profileId = DEFAUL
         candidates.push(path.join(root, 'node_modules', '.bin', name + extension))
       }
     }
+  }
+
+  if (tool.installer?.type === 'npm') {
+    for (const extension of ['.cmd', '.exe', '.bat']) candidates.push(path.join(root, tool.bin + extension))
   }
 
   if (tool.id === 'agy') {
@@ -255,6 +260,8 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
     TEMP: tempHome,
     TMP: tempHome,
     TERM: 'xterm-256color',
+    TERM_PROGRAM: 'OmniShell',
+    TERM_PROGRAM_VERSION: require('../package.json').version,
     COLORTERM: 'truecolor',
     FORCE_COLOR: '3',
     CI: 'false',
@@ -302,6 +309,11 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
     }
   }
 
+  // npm-based CLIs use the same runtime for their own npm -g updates.
+  env.npm_config_prefix = runtimeRoot
+  env.npm_config_cache = path.join(runtimeRoot, '.cache', 'npm')
+  env.npm_config_update_notifier = 'false'
+
   const localBinDirectories = [path.join(runtimeRoot, 'node_modules', '.bin'), path.join(runtimeRoot, 'bin'), runtimeRoot]
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH'
   env[pathKey] = localBinDirectories.join(path.delimiter) + path.delimiter + (env[pathKey] || '')
@@ -344,7 +356,7 @@ function externalScriptPath(appRoot, scriptName) {
     .replace(/([\\/])app\.asar([\\/])/i, '$1app.asar.unpacked$2')
 }
 
-function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
+function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID, version = 'latest') {
   if (!tool || !tool.installer) return null
   const root = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
   const workingDirectory = path.join(systemRoot, '_install', tool.id, profileId)
@@ -358,10 +370,21 @@ function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoo
             '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', externalScriptPath(appRoot, 'install-npm.ps1'),
             '-PackageName', installer.package,
+            '-PackageVersion', version,
             '-Destination', root,
             '-AdditionalArgumentsJson', JSON.stringify(installer.args || [])
           ]
-        : ['install', '--save-exact', installer.package, '--no-fund', '--no-audit'],
+        : ['install', '--save-exact', `${installer.package}@${version}`, '--no-fund', '--no-audit'],
+      cwd: root
+    }
+  }
+
+  if (installer.type === 'agy-release') {
+    return {
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', externalScriptPath(appRoot, 'install-agy.ps1'),
+        '-ManifestUri', installer.manifest, '-DestinationDirectory', path.join(root, 'AppData', 'Local', 'agy', 'bin'),
+        '-WorkingDirectory', workingDirectory],
       cwd: root
     }
   }

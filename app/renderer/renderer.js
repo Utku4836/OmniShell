@@ -42,6 +42,7 @@ const ctxRestart = $('ctx-restart')
 const ctxOpenLog = $('ctx-open-log')
 const ctxCopy = $('ctx-copy')
 const ctxClose = $('ctx-close')
+const ctxMinimize = $('ctx-minimize')
 
 let tools = []
 let toolById = new Map()
@@ -50,6 +51,7 @@ const rows = new Map()
 const dirtyRows = new Set()
 const pendingProgress = new Map()
 const profilesCache = new Map()
+const profileInstallStates = new Map()
 const profileCapabilitiesCache = new Map()
 const profileRows = new Map()
 const submenuRows = new Map()
@@ -67,6 +69,7 @@ let profileEditorMode = null
 let profileSettingsDraft = null
 let profileDeleteArmed = false
 let terminal = null
+let terminalEdges = null
 let fitAddon = null
 let webglAddon = null
 let terminalLaunchToken = 0
@@ -179,7 +182,7 @@ function queueRows(ids = tools.map((tool) => tool.id)) {
 function setState(toolId, next) {
   const previous = states.get(toolId) || {}
   const percent = next.state === 'installing'
-    ? Math.max(normalizePercent(previous.percent), normalizePercent(next.percent, previous.percent || 0))
+    ? Math.max(previous.state === 'installing' ? normalizePercent(previous.percent) : 0, normalizePercent(next.percent, 1))
     : normalizePercent(next.percent, next.state === 'ready' ? 100 : 0)
   states.set(toolId, { ...previous, ...next, percent })
   queueRows([toolId])
@@ -235,7 +238,7 @@ function selectTool(id, focus = false) {
   if (!toolById.has(id)) return
   const previous = selectedToolId
   if (previous === id) {
-    if (focus) rows.get(id)?.item.focus({ preventScroll: true })
+    if (focus) { rows.get(id)?.item.focus({ preventScroll: true }); rows.get(id)?.item.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
     return
   }
   if (previous && previous !== id && states.get(previous)?.state === 'confirm') {
@@ -249,7 +252,7 @@ function selectTool(id, focus = false) {
   }
   selectedToolId = id
   queueRows([previous, id].filter(Boolean))
-  if (focus) rows.get(id)?.item.focus({ preventScroll: true })
+  if (focus) { rows.get(id)?.item.focus({ preventScroll: true }); rows.get(id)?.item.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
 }
 
 function gridColumns() {
@@ -334,6 +337,11 @@ async function loadProfiles(tool, force = false) {
   const result = await window.api.profiles(tool.id)
   if (!result?.ok) throw new Error(result?.error || 'Profiles could not be loaded')
   profilesCache.set(tool.id, result.profiles)
+  for (const profile of result.profiles) {
+    const key = `${tool.id}:${profile.id}`
+    if (profile.installing) profileInstallStates.set(key, { ...profile, percent: profile.installPercent, line: profile.installLine })
+    else if (profileInstallStates.get(key)?.installing) profileInstallStates.delete(key)
+  }
   profileCapabilitiesCache.set(tool.id, result.capabilities || {})
   return result.profiles
 }
@@ -437,12 +445,20 @@ function showProfileSettings() {
   profileSettingsOptions.querySelector('button:not([disabled])')?.focus({ preventScroll: true })
 }
 
+function installStatusText(state) {
+  const elapsed = state.elapsedSeconds ? ` ? ${state.elapsedSeconds}s` : ''
+  return `${hashBar(state.percent)} ${normalizePercent(state.percent)}%${elapsed}\n${state.line || 'Preparing installer...'}`
+}
+
 function updateProfileActions() {
   const profile = selectedProfileRecord()
-  profileRename.disabled = !profile
-  profileSettingsOpen.disabled = !profile
-  profileInstall.classList.toggle('hidden', !profile || profile.installed)
-  profileInstall.disabled = !profile || profile.installed
+  const state = profileInstallStates.get(`${profileDialogToolId}:${profile?.id}`)
+  profileRename.disabled = !profile || Boolean(state?.installing)
+  profileSettingsOpen.disabled = !profile || Boolean(state?.installing)
+  profileInstall.classList.toggle('hidden', !profile)
+  profileInstall.disabled = !profile
+  profileInstall.textContent = state?.installing ? 'CANCEL' : (profile?.installed ? 'UPDATE' : 'INSTALL')
+  profileStatus.textContent = state?.installing ? installStatusText(state) : (state?.message || '')
 }
 
 function setSelectedProfile(profileId, focus = false) {
@@ -522,20 +538,20 @@ async function openProfilePicker(tool, preferredProfileId = null, mode = 'curren
   profileOverlay.classList.remove('closing')
   profileDialogToolId = tool.id
   profileDialogMode = mode
-  profileTitle.textContent = mode === 'new-window'
+  profileTitle.textContent = mode === 'new-window' || mode === 'switch'
     ? `NEW ${tool.name.toUpperCase()} WINDOW`
     : `${tool.name.toUpperCase()} PROFILES`
   profileOverlay.classList.remove('hidden')
   hideProfileEditor()
   profileStatus.textContent = 'Loading profiles...'
   try {
-    const profiles = await loadProfiles(tool)
+    const profiles = await loadProfiles(tool, true)
     selectedProfileId = profiles.some((profile) => profile.id === preferredProfileId)
       ? preferredProfileId
       : (profiles[0]?.id || null)
     renderProfileList(profiles)
     const selected = profiles.find((profile) => profile.id === selectedProfileId)
-    profileStatus.textContent = selected && !selected.installed ? 'This profile needs its own CLI installation.' : ''
+    if (selected && !selected.installed && !profileInstallStates.get(`${tool.id}:${selected.id}`)?.installing) profileStatus.textContent = 'This profile needs its own CLI installation.'
     profileRows.get(selectedProfileId)?.focus({ preventScroll: true })
   } catch (error) {
     profileStatus.textContent = String(error.message || error)
@@ -646,13 +662,14 @@ async function openSelectedProfile() {
   const profiles = tool ? (profilesCache.get(tool.id) || []) : []
   const profile = profiles.find((candidate) => candidate.id === selectedProfileId)
   if (!tool || !profile) return
+  if (profileInstallStates.get(`${tool.id}:${profile.id}`)?.installing) { updateProfileActions(); return }
   if (!profile.installed) {
     await beginProfileInstall()
     return
   }
   const mode = profileDialogMode
   closeProfilePicker(true)
-  if (mode === 'new-window') {
+  if (mode === 'new-window' || mode === 'switch') {
     const result = await window.api.openToolWindow(tool.id, profile.id)
     if (!result?.ok) showToast(result?.error || 'The profile window could not be opened.')
   } else {
@@ -663,15 +680,21 @@ async function openSelectedProfile() {
 async function beginProfileInstall() {
   const tool = profileDialogTool()
   const profile = selectedProfileRecord()
-  if (!tool || !profile || profile.installed || profileInstall.disabled) return
-  profileInstall.disabled = true
-  profileStatus.textContent = `${hashBar(1)}   1%`
+  if (!tool || !profile || profileInstall.disabled) return
+  const key = `${tool.id}:${profile.id}`
+  if (profileInstallStates.get(key)?.installing) {
+    const result = await window.api.cancelInstall(tool.id, profile.id)
+    if (!result?.ok) showToast(result?.error || 'Installer could not be cancelled.')
+    return
+  }
+  profileInstallStates.set(key, { installing: true, percent: 1, line: 'Preparing installer...' })
+  updateProfileActions()
   try {
     const result = await window.api.installTool(tool.id, profile.id)
     if (!result?.ok) throw new Error(result?.error || 'Installer could not start.')
   } catch (error) {
-    profileInstall.disabled = false
-    profileStatus.textContent = String(error.message || error)
+    profileInstallStates.set(key, { installing: false, message: String(error.message || error) })
+    updateProfileActions()
   }
 }
 
@@ -793,18 +816,21 @@ function initTerminal() {
   if (terminal) return
   terminal = new Terminal({
     allowTransparency: false,
-    fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
+    fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
     fontSize: 15,
     fontWeight: '400',
-    fontWeightBold: '600',
-    lineHeight: 1,
+    fontWeightBold: '700',
+    lineHeight: 1.1,
     rescaleOverlappingGlyphs: true,
     cursorBlink: false,
     cursorStyle: 'bar',
     cursorInactiveStyle: 'none',
     scrollback: 5000,
-    smoothScrollDuration: 0,
+    smoothScrollDuration: reducedMotion.matches ? 0 : 70,
     theme: {
+      scrollbarSliderBackground: '#6f625844',
+      scrollbarSliderHoverBackground: '#8b7d7066',
+      scrollbarSliderActiveBackground: '#ad9c8999',
       background: '#000000',
       foreground: '#e8e4e2',
       cursor: '#ff6a27',
@@ -831,6 +857,9 @@ function initTerminal() {
   fitAddon = new FitAddon.FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.open(termContainer)
+  terminalEdges = new TerminalEdges(terminal, $('terminal-edges'), viewTerminal)
+  terminal.onRender(scheduleTerminalSurfaceSync)
+  terminal.onScroll(scheduleTerminalSurfaceSync)
   try {
     if (window.WebglAddon?.WebglAddon) {
       webglAddon = new window.WebglAddon.WebglAddon()
@@ -864,11 +893,11 @@ function fitTerminal() {
     const terminalStyle = getComputedStyle(terminal.element)
     const horizontalPadding = parseFloat(terminalStyle.paddingLeft) + parseFloat(terminalStyle.paddingRight)
     const verticalPadding = parseFloat(terminalStyle.paddingTop) + parseFloat(terminalStyle.paddingBottom)
-    const cols = Math.max(11, Math.floor((termContainer.clientWidth - horizontalPadding) / dimensions.width))
+    const cols = Math.max(11, Math.floor((termContainer.clientWidth - horizontalPadding - 8) / dimensions.width))
     const rowsCount = Math.max(6, Math.floor((termContainer.clientHeight - verticalPadding) / dimensions.height))
     if (terminal.cols !== cols || terminal.rows !== rowsCount) terminal.resize(cols, rowsCount)
-    const pixelWidth = Math.max(1, Math.round(termContainer.clientWidth))
-    const pixelHeight = Math.max(1, Math.round(termContainer.clientHeight))
+    const pixelWidth = Math.max(1, Math.round(cols * dimensions.width))
+    const pixelHeight = Math.max(1, Math.round(rowsCount * dimensions.height))
     if (cols !== lastCols || rowsCount !== lastRows || pixelWidth !== lastPixelWidth || pixelHeight !== lastPixelHeight) {
       lastCols = cols
       lastRows = rowsCount
@@ -885,6 +914,7 @@ function scheduleFit() {
 
 function clearTerminalSurface() {
   if (!terminal) return
+  terminalEdges?.clear()
   terminal.reset()
   terminal.clear()
   terminal.refresh(0, Math.max(0, terminal.rows - 1))
@@ -914,61 +944,13 @@ function paintTerminalSurface(background) {
   if (viewport) viewport.style.backgroundColor = background
 }
 
-function applyDetectedTerminalSurface(background) {
-  if (!terminal || !/^#[0-9a-f]{6}$/i.test(background) || background.toLowerCase() === terminalSurfaceColor.toLowerCase()) return
-  terminalSurfaceColor = background
-  paintTerminalSurface(background)
-  terminal.options.theme = {
-    ...terminal.options.theme,
-    background,
-    black: background,
-    cursor: terminalCursorVisible ? '#ff6a27' : background,
-    cursorAccent: background
-  }
-}
-
-function isSafeTerminalSurfaceColor(color) {
-  const red = (color >> 16) & 0xff
-  const green = (color >> 8) & 0xff
-  const blue = color & 0xff
-  const brightest = Math.max(red, green, blue)
-  const darkest = Math.min(red, green, blue)
-  return brightest <= 48 && brightest - darkest <= 24
-}
-
-function detectDominantTerminalBackground() {
+function paintTerminalEdges() {
   terminalSurfaceTimer = null
-  if (!terminal || currentView !== 'terminal') return
-  const buffer = terminal.buffer.active
-  const colors = new Map()
-  let sampled = 0
-  const reusableCell = buffer.getNullCell()
-  for (let row = 0; row < terminal.rows; row += 1) {
-    const line = buffer.getLine(buffer.viewportY + row)
-    if (!line) continue
-    for (let column = 0; column < terminal.cols; column += 2) {
-      const cell = line.getCell(column, reusableCell)
-      sampled += 1
-      if (!cell?.isBgRGB()) continue
-      const color = cell.getBgColor() & 0xffffff
-      colors.set(color, (colors.get(color) || 0) + 1)
-    }
-  }
-  let dominantColor = null
-  let dominantCount = 0
-  for (const [color, count] of colors) {
-    if (count > dominantCount) {
-      dominantColor = color
-      dominantCount = count
-    }
-  }
-  if (dominantColor === null || dominantCount < Math.max(24, sampled * 0.18) || !isSafeTerminalSurfaceColor(dominantColor)) return
-  applyDetectedTerminalSurface(`#${dominantColor.toString(16).padStart(6, '0')}`)
+  if (currentView === 'terminal') terminalEdges?.paint()
 }
 
 function scheduleTerminalSurfaceSync() {
-  clearTimeout(terminalSurfaceTimer)
-  terminalSurfaceTimer = setTimeout(detectDominantTerminalBackground, 48)
+  if (terminalSurfaceTimer === null) terminalSurfaceTimer = requestAnimationFrame(paintTerminalEdges)
 }
 
 function revealTerminalCursor() {
@@ -1007,9 +989,8 @@ function fitBrandTitle() {
 
   if (!brandNaturalWidth || !brandNaturalHeight) {
     brandTitle.style.fontSize = '24px'
-    const naturalBounds = brandTitle.getBoundingClientRect()
-    brandNaturalWidth = Math.max(1, naturalBounds.width)
-    brandNaturalHeight = Math.max(1, naturalBounds.height)
+    brandNaturalWidth = Math.max(1, brandTitle.offsetWidth)
+    brandNaturalHeight = Math.max(1, brandTitle.offsetHeight)
   }
 
   const widthScale = (contentWidth * 0.98) / brandNaturalWidth
@@ -1032,7 +1013,7 @@ async function openTerminal(tool, profile = { id: 'default', name: 'Default' }) 
   terminalCursorVisible = false
   clearTimeout(terminalCursorTimer)
   terminalCursorTimer = null
-  clearTimeout(terminalSurfaceTimer)
+  cancelAnimationFrame(terminalSurfaceTimer)
   terminalSurfaceTimer = null
   showView('terminal')
   initTerminal()
@@ -1079,7 +1060,7 @@ async function leaveTerminal() {
   terminalExited = false
   clearTimeout(terminalCursorTimer)
   terminalCursorTimer = null
-  clearTimeout(terminalSurfaceTimer)
+  cancelAnimationFrame(terminalSurfaceTimer)
   terminalSurfaceTimer = null
   await window.api.terminalStop()
   if (isAuxiliaryWindow) {
@@ -1112,43 +1093,52 @@ function flushProgressEvents() {
 }
 
 function setupIpcListeners() {
+  let visibilityAnimation = null
+  window.api.onWindowVisibility(({ phase }) => {
+    visibilityAnimation?.cancel()
+    const panel = $('panel')
+    const hidden = reducedMotion.matches ? { opacity: 0 } : { opacity: 0, transform: 'translateY(8px) scale(0.988)' }
+    const visible = { opacity: 1, transform: 'none' }
+    const animation = panel.animate(phase === 'show' ? [hidden, visible] : [visible, hidden], {
+      duration: phase === 'show' ? 170 : 130, easing: 'cubic-bezier(0.2, 0.75, 0.2, 1)', fill: 'forwards'
+    })
+    visibilityAnimation = animation
+    animation.finished.then(() => {
+      if (phase === 'show' && visibilityAnimation === animation) { animation.cancel(); visibilityAnimation = null; scheduleFit(); scheduleTerminalSurfaceSync() }
+    }).catch(() => {})
+  })
   window.api.onInstallProgress((data) => {
-    if (data.profileId && data.profileId !== 'default') {
-      if (profileDialogToolId === data.toolId && selectedProfileId === data.profileId) {
-        profileStatus.textContent = `${hashBar(data.percent)} ${String(normalizePercent(data.percent)).padStart(3, ' ')}%`
-      }
-      return
-    }
+    const profileId = data.profileId || 'default'
+    profileInstallStates.set(`${data.toolId}:${profileId}`, { ...data, installing: true })
+    if (profileDialogToolId === data.toolId && selectedProfileId === profileId) updateProfileActions()
+    if (profileId !== 'default') return
     pendingProgress.set(data.toolId, data)
     if (!progressFrame) progressFrame = requestAnimationFrame(flushProgressEvents)
   })
 
   window.api.onInstallDone((data) => {
-    if (data.profileId && data.profileId !== 'default') {
-      const profiles = profilesCache.get(data.toolId) || []
-      const profile = profiles.find((candidate) => candidate.id === data.profileId)
-      if (profile && data.ok) profile.installed = true
-      if (profileDialogToolId === data.toolId) {
-        renderProfileList(profiles)
-        profileInstall.disabled = !profile || Boolean(profile.installed)
-        profileStatus.textContent = data.ok
-          ? 'CLI installed. Press Enter or click the profile.'
-          : (data.cancelled ? 'Installation cancelled.' : (data.error || 'Installation failed.'))
-      }
-      const tool = getTool(data.toolId)
-      if (tool) showToast(data.ok ? `${tool.name} installed for ${profile?.name || 'profile'}.` : `${tool.name} profile installation failed.`)
-      return
+    const profileId = data.profileId || 'default'
+    const profiles = profilesCache.get(data.toolId) || []
+    const profile = profiles.find((candidate) => candidate.id === profileId)
+    if (profile) {
+      if (data.ok) profile.installed = true
+      profile.installing = false
     }
-    pendingProgress.delete(data.toolId)
+    profileInstallStates.set(`${data.toolId}:${profileId}`, {
+      installing: false,
+      message: data.ok ? 'CLI ready. Select a profile to open it.'
+        : (data.cancelled ? 'Installation cancelled.' : (data.error || 'Installation failed.'))
+    })
+    if (profileDialogToolId === data.toolId) renderProfileList(profiles)
     const tool = getTool(data.toolId)
     if (!tool) return
-    if (data.manual) setState(data.toolId, { state: 'manual', hint: data.hint, logAvailable: data.logAvailable })
-    else if (data.ok) setState(data.toolId, { state: 'ready', percent: 100, logAvailable: data.logAvailable })
-    else setState(data.toolId, { state: 'failed', cancelled: data.cancelled, err: data.error || 'Installation failed.', logAvailable: data.logAvailable })
-
-    if (data.ok) showToast(`${tool.name} installed and verified locally.`)
-    else showToast(data.cancelled ? `${tool.name} installation cancelled.` : `${tool.name} failed. Open the install log from the right-click menu.`)
-
+    if (profileId === 'default') {
+      pendingProgress.delete(data.toolId)
+      if (data.manual) setState(data.toolId, { state: 'manual', hint: data.hint, logAvailable: data.logAvailable })
+      else if (data.ok || data.installed) setState(data.toolId, { state: 'ready', percent: 100, err: data.error || '', logAvailable: data.logAvailable })
+      else setState(data.toolId, { state: 'failed', cancelled: data.cancelled, err: data.error || 'Installation failed.', logAvailable: data.logAvailable })
+    }
+    showToast(data.ok ? `${tool.name} is ready.` : (data.cancelled ? `${tool.name} installation cancelled.` : `${tool.name}: ${data.error || 'Installation failed.'}`))
   })
 
   window.api.onPtyData(({ sessionId, data }) => {
@@ -1168,8 +1158,7 @@ function setupIpcListeners() {
     if (activeSessionId !== null && sessionId !== activeSessionId) return
     activeSessionId = null
     terminalExited = true
-    terminal.writeln(`\r\n\x1b[38;2;255;100;39m[Session ended / exit ${exitCode}]\x1b[0m`)
-    terminal.writeln('\x1b[90mPress Enter to restart or use right-click Close CLI.\x1b[0m')
+    leaveTerminal().catch((error) => showToast(String(error.message || error)))
   })
 }
 
@@ -1201,6 +1190,7 @@ function openSubmenu() {
   clearTimeout(submenuCloseTimer)
   ctxOpenOther.classList.add('submenu-open')
   ctxOpenOther.setAttribute('aria-expanded', 'true')
+  ctxSubMenu.classList.remove('hidden')
   const parent = ctxOpenOther.getBoundingClientRect()
   ctxSubMenu.style.maxHeight = `${Math.max(1, window.innerHeight - 16)}px`
   const width = ctxSubMenu.offsetWidth
@@ -1210,15 +1200,16 @@ function openSubmenu() {
     : parent.left - width - 5
   const left = Math.max(8, Math.min(preferredLeft, window.innerWidth - width - 8))
   const top = Math.max(8, Math.min(parent.top - 6, window.innerHeight - height - 8))
-  ctxSubMenu.style.left = `${left - parent.left}px`
+  ctxSubMenu.style.left = `${left}px`
   ctxSubMenu.style.right = 'auto'
-  ctxSubMenu.style.top = `${top - parent.top}px`
+  ctxSubMenu.style.top = `${top}px`
 }
 
 function closeSubmenu() {
   clearTimeout(submenuCloseTimer)
   ctxOpenOther.classList.remove('submenu-open')
   ctxOpenOther.setAttribute('aria-expanded', 'false')
+  ctxSubMenu.classList.add('hidden')
 }
 
 function scheduleSubmenuClose() {
@@ -1249,9 +1240,7 @@ function populateSubmenu() {
     }
     ctxSubMenu.replaceChildren(fragment)
   }
-  for (const [toolId, item] of submenuRows) {
-    item.classList.toggle('hidden', currentView === 'terminal' && toolId === activeToolId)
-  }
+
 }
 
 function showContextMenu(x, y) {
@@ -1276,12 +1265,13 @@ function showContextMenu(x, y) {
   ctxClose.classList.toggle('menu-session-close', terminalContext)
   ctxClose.classList.toggle('menu-danger', !terminalContext)
   if (currentView === 'terminal') populateSubmenu()
-  ctxOpenOther.classList.remove('submenu-open')
+  closeSubmenu()
   contextCloseAnimation?.cancel()
   contextCloseAnimation = null
   ctxMenu.classList.remove('hidden')
 
-  const menuWidth = 220
+  ctxMenu.style.maxHeight = `${Math.max(1, window.innerHeight - 16)}px`
+  const menuWidth = ctxMenu.offsetWidth
   const menuHeight = ctxMenu.offsetHeight || 230
   const submenuWidth = 220
   ctxMenu.classList.toggle('open-left', x + menuWidth + submenuWidth + 16 > window.innerWidth)
@@ -1290,6 +1280,9 @@ function showContextMenu(x, y) {
 }
 
 function setupContextMenu() {
+  // Keep the submenu outside clipped or transformed parent elements.
+  document.body.append(ctxSubMenu)
+  ctxSubMenu.classList.add('hidden')
   window.addEventListener('contextmenu', (event) => {
     event.preventDefault()
     const row = event.target.closest?.('[data-tool-id]')
@@ -1297,7 +1290,7 @@ function setupContextMenu() {
     showContextMenu(event.clientX, event.clientY)
   })
   window.addEventListener('pointerdown', (event) => {
-    if (!ctxMenu.contains(event.target)) hideContextMenu()
+    if (!ctxMenu.contains(event.target) && !ctxSubMenu.contains(event.target)) hideContextMenu()
   })
   ctxOpenOther.addEventListener('pointerenter', openSubmenu)
   ctxOpenOther.addEventListener('pointerleave', (event) => {
@@ -1339,6 +1332,7 @@ function setupContextMenu() {
   ctxCancelInstall.addEventListener('click', () => { const tool = contextTool(); hideContextMenu(); cancelInstall(tool) })
   ctxOpenLog.addEventListener('click', () => { const tool = contextTool(); hideContextMenu(); openInstallLog(tool) })
   ctxCopy.addEventListener('click', () => { hideContextMenu(); copyTerminalSelection() })
+  ctxMinimize.addEventListener('click', () => { hideContextMenu(); window.api.minimizeWindow() })
   ctxClose.addEventListener('click', () => {
     const closeSession = currentView === 'terminal'
     hideContextMenu()
@@ -1526,6 +1520,11 @@ function setupControls() {
   window.addEventListener('resize', () => {
     scheduleFit()
     scheduleBrandFit()
+    if (!ctxMenu.classList.contains('hidden')) {
+      const wasOpen = ctxOpenOther.classList.contains('submenu-open')
+      showContextMenu(parseFloat(ctxMenu.style.left) || 8, parseFloat(ctxMenu.style.top) || 8)
+      if (wasOpen) openSubmenu()
+    }
   }, { passive: true })
   if (window.ResizeObserver) new ResizeObserver(scheduleFit).observe(termContainer)
 

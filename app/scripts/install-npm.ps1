@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackageName,
     [Parameter(Mandatory = $true)][string]$Destination,
+    [ValidatePattern('^(latest|[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._-]+)?)$')][string]$PackageVersion = 'latest',
     [string]$AdditionalArgumentsJson = '[]',
     [switch]$DryRun
 )
@@ -15,7 +16,7 @@ Push-Location -LiteralPath $Destination
 
 try {
     Write-OmniProgress -Percent 12 -Message "Resolving $PackageName"
-    $arguments = @('install', '--save-exact', $PackageName, '--no-fund', '--no-audit')
+    $arguments = @('install', '--save-exact', ("{0}@{1}" -f $PackageName, $PackageVersion), '--no-fund', '--no-audit', '--loglevel=http', '--fetch-retries=2', '--fetch-timeout=60000')
     $parsedArguments = $AdditionalArgumentsJson | ConvertFrom-Json
     foreach ($argument in $parsedArguments) {
         $arguments += [string]$argument

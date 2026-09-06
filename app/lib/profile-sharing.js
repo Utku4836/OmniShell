@@ -94,7 +94,7 @@ async function expandRule(root, relativePattern) {
   return entries.filter((entry) => expression.test(entry.name)).map((entry) => path.join(path.dirname(relativePattern), entry.name))
 }
 
-async function copyPath(source, destination) {
+async function copyPath(source, destination, keepNewer = false) {
   let stat
   try { stat = await fsp.lstat(source) } catch (error) {
     if (error.code === 'ENOENT') return
@@ -104,11 +104,14 @@ async function copyPath(source, destination) {
   if (/\.(?:sqlite|db)-(?:wal|shm|journal)$/i.test(source)) return
   await fsp.mkdir(path.dirname(destination), { recursive: true })
   try {
-    if ((await fsp.lstat(destination)).isSymbolicLink()) throw new Error(`Shared destination must not be a link: ${destination}`)
+    const current = await fsp.lstat(destination)
+    if (stat.isFile() && current.isFile() && keepNewer && current.mtimeMs > stat.mtimeMs) return
+    if (stat.isFile() && current.isFile() && !/\.(?:db|sqlite)$/i.test(source) && current.size === stat.size && Math.abs(current.mtimeMs - stat.mtimeMs) < 1) return
+    if (current.isSymbolicLink()) throw new Error(`Shared destination must not be a link: ${destination}`)
   } catch (error) { if (error.code !== 'ENOENT') throw error }
   if (stat.isDirectory()) {
     await fsp.mkdir(destination, { recursive: true })
-    for (const name of await fsp.readdir(source)) await copyPath(path.join(source, name), path.join(destination, name))
+    for (const name of await fsp.readdir(source)) await copyPath(path.join(source, name), path.join(destination, name), keepNewer)
   } else if (/\.(?:sqlite|db)$/i.test(source)) {
     // SQLite's backup transaction includes committed WAL pages without copying live sidecars.
     const { DatabaseSync, backup } = require('node:sqlite')
@@ -119,6 +122,7 @@ async function copyPath(source, destination) {
     try {
       await fsp.copyFile(source, partial)
       await fsp.rename(partial, destination)
+      await fsp.utimes(destination, stat.atime, stat.mtime)
     } finally {
       await fsp.rm(partial, { force: true }).catch(() => {})
     }
@@ -148,7 +152,7 @@ async function synchronize(direction, tool, profile, systemRoot) {
       for (const relativePath of await expandRule(sourceRoot, rule)) {
         await rejectLinkedParents(sourceRoot, relativePath)
         await rejectLinkedParents(destinationRoot, relativePath)
-        await copyPath(path.join(sourceRoot, relativePath), path.join(destinationRoot, relativePath))
+        await copyPath(path.join(sourceRoot, relativePath), path.join(destinationRoot, relativePath), direction === 'hydrate' && setting === 'sharedConfig')
       }
     }
   }
