@@ -11,7 +11,7 @@
 
 OmniShell is an open-source Windows desktop app for running AI coding CLIs. Choose a tool, create a profile, and sign in inside its terminal. You can keep personal and work accounts in separate local installations and switch between them from one interface.
 
-Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
+The home screen keeps the ASCII wordmark above a compact two-column tool list. Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
 
 ## Get started
 
@@ -51,7 +51,7 @@ OmniShell excludes dedicated authentication files from sharing. Some tools store
 | [Claude Code](https://github.com/anthropics/claude-code) | `@anthropic-ai/claude-code` |
 | [Codex](https://github.com/openai/codex) | `@openai/codex` |
 | [OpenCode](https://github.com/anomalyco/opencode) | `opencode-ai` |
-| [Antigravity CLI](https://antigravity.google/docs/cli-install) | Official PowerShell installer |
+| [Antigravity CLI](https://antigravity.google/docs/cli-install) | Official Windows release with checksum verification |
 | [Aider](https://aider.chat/docs/install.html) | Official PowerShell installer |
 | [GitHub Copilot CLI](https://github.com/github/copilot-cli) | `@github/copilot` |
 | [Cursor Agent](https://prod.cursor.com/docs/cli/installation) | Official Windows release |
@@ -78,7 +78,7 @@ OmniShell resolves commands from the selected profile's runtime directory. Insta
 | Right-click | Open window and session actions |
 | `Ctrl+Alt+S` | Hide or restore OmniShell |
 
-**Switch CLI** opens a profile picker in the current window. **New Window** asks which profile to open. Closing a session returns the main window to the tool grid; auxiliary session windows close. `Esc` stays with the active CLI. After a CLI exits, press `Enter` to restart it.
+**Switch CLI** keeps your current session open and launches the selected profile in a new window. Selecting an already running profile brings its window forward. When a CLI exits, the primary window returns to the home screen and auxiliary windows close. Use **Minimize** in the context menu to send a window to the taskbar. `Esc` stays with the active CLI.
 
 ## Local storage
 

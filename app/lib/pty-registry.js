@@ -31,7 +31,7 @@ class PtyRegistry {
     if (session.outputTimer) clearTimeout(session.outputTimer)
     session.outputTimer = null
     session.outputBuffer = ''
-    try { this.killProcess(session.proc) } catch (error) {}
+    try { this.killProcess(session.proc, session) } catch (error) {}
     return true
   }
 

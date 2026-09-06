@@ -31,7 +31,7 @@ async function harness(t, options = {}) {
     spawn() {
       const proc = {
         pid: spawned.length + 100, onData() {}, onExit(callback) { this.exit = callback },
-        write() {}, resize() {}, kill() { setImmediate(() => this.exit({ exitCode: 0 })) }
+        write(data) { if (data === '\x03' && !this.stopped) { this.stopped = true; setImmediate(() => this.exit({ exitCode: 0 })) } }, resize() {}, kill() { setImmediate(() => this.exit({ exitCode: 0 })) }
       }
       spawned.push(proc)
       return proc
@@ -53,6 +53,7 @@ async function harness(t, options = {}) {
     require(name) {
       if (name === 'electron') return { app, ipcMain, webContents: { fromId: () => null }, globalShortcut: { unregisterAll() {} } }
       if (name === 'node-pty') return pty
+      if (name === './lib/console-window-guard') return { ConsoleWindowGuard: class { async ready() {} watch() {} unwatch() {} stop() {} } }
       if (name === './lib/tooling') return {
         ...tooling, SYSTEM_ROOT: root,
         prepareProfileDirectories: (tool, id) => tooling.prepareProfileDirectories(tool, id, root)
@@ -65,7 +66,7 @@ async function harness(t, options = {}) {
       if (name === './lib/install-runtime') return { ...localRequire(name), terminateProcessTree: (proc) => { proc.kill(); return true } }
       return localRequire(name)
     },
-    __dirname: path.dirname(sourcePath), process, console, URL, setTimeout, clearTimeout, setImmediate
+    __dirname: path.dirname(sourcePath), process, console, URL, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate
   }, { filename: sourcePath })
   const event = (id = 1) => ({ sender: { id, isDestroyed: () => false } })
   return {

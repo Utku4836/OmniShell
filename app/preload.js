@@ -41,5 +41,11 @@ contextBridge.exposeInMainWorld('api', {
   windowBounds: () => ipcRenderer.invoke('win:get-bounds'),
   setWindowBounds: (bounds) => ipcRenderer.send('win:set-bounds', bounds),
   closeWindow: () => ipcRenderer.send('win:close'),
+  onWindowVisibility: (cb) => {
+    const handler = (_event, data) => cb(data)
+    ipcRenderer.on('window:visibility', handler)
+    return () => ipcRenderer.removeListener('window:visibility', handler)
+  },
+  minimizeWindow: () => ipcRenderer.send('win:minimize'),
   getInitialContext: () => ipcRenderer.invoke('window:get-initial-context')
 })

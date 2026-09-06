@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, clipboard, globalShortcut, ipcMain, screen, shell, webContents } = require('electron')
+const { app, BrowserWindow, Menu, Tray, clipboard, globalShortcut, ipcMain, net, screen, shell, webContents } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
@@ -25,14 +25,17 @@ const {
 const { DEFAULT_PROFILE_ID, ProfileStore, normalizeProfileSettings, validateProfileId } = require('./lib/profile-store')
 const { PtyRegistry } = require('./lib/pty-registry')
 const { collectTerminalResponses } = require('./lib/terminal-queries')
-const { createInstallReporter, findLatestInstallLogs, terminateProcessTree } = require('./lib/install-runtime')
+const { createInstallReporter, findLatestInstallLogs, terminateProcessTree, stopPtyGracefully } = require('./lib/install-runtime')
 const { hydrateSharedProfileData, persistSharedProfileData, sharingCapabilities } = require('./lib/profile-sharing')
-const { prepareProfileLaunch } = require('./lib/profile-launch')
+const { prepareProfileLaunch, finalizeProfileLaunch } = require('./lib/profile-launch')
+const { animateWindow, clearWindowAnimation } = require('./lib/window-transitions')
+const { ConsoleWindowGuard } = require('./lib/console-window-guard')
+const consoleGuard = new ConsoleWindowGuard(__dirname)
+const { AutoUpdater, ReleaseResolver, installedVersion, newerVersion } = require('./lib/tool-updates')
 
 const windows = new Set()
-const ptyRegistry = new PtyRegistry((proc) => {
-  if (process.platform === 'win32' && terminateProcessTree(proc)) return
-  proc.kill()
+const ptyRegistry = new PtyRegistry((proc, session) => {
+  stopPtyGracefully(proc, session.exited)
 })
 const windowInitialContexts = new Map()
 const installJobs = new Map()
@@ -47,6 +50,18 @@ const editingProfiles = new Set()
 
 let tray = null
 let installHistoryLoaded = false
+const releaseResolver = new ReleaseResolver(net?.fetch ? net.fetch.bind(net) : undefined)
+const autoUpdater = new AutoUpdater({
+  tools: TOOLS, systemRoot: SYSTEM_ROOT, listProfiles: (id) => profileStore.list(id), resolver: releaseResolver,
+  readVersion: (tool, _root, id) => readProfileVersion(tool, id),
+  isBusy: (toolId, profileId) => quitting || installJobs.size > 0 || profileHasActiveSession(toolId, profileId),
+  install: async (toolId, profileId, release) => {
+    const result = await installTool(-1, toolId, profileId, release)
+    if (!result.ok) return result
+    return installJobs.get(profileInstallKey(toolId, profileId))?.completion || result
+  }
+})
+
 let quitting = false
 let quitReady = false
 
@@ -73,6 +88,7 @@ function applyWindowShape(targetWin) {
 }
 
 function safeSend(senderId, channel, payload) {
+  if (senderId <= 0) return
   const target = sendTargets.get(senderId) || webContents.fromId(senderId)
   if (target && !target.isDestroyed()) target.send(channel, payload)
 }
@@ -97,7 +113,10 @@ function profileWorkspaceDir(tool, profileId = DEFAULT_PROFILE_ID) {
 function profilesWithInstallState(tool, profiles) {
   return profiles.map((profile) => ({
     ...profile,
-    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id))
+    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)),
+    installing: installJobs.has(profileInstallKey(tool.id, profile.id)),
+    installPercent: installJobs.get(profileInstallKey(tool.id, profile.id))?.percent || 0,
+    installLine: installJobs.get(profileInstallKey(tool.id, profile.id))?.lastLine || ''
   }))
 }
 
@@ -116,7 +135,10 @@ function profilesConflict(left, right) {
 function persistSessionProfile(session) {
   if (!session) return Promise.resolve()
   if (session.persistPromise) return session.persistPromise
-  session.persistPromise = persistSharedProfileData(session.tool, session.profile, SYSTEM_ROOT)
+  session.persistPromise = (async () => {
+    await finalizeProfileLaunch(session.tool, profileDir(session.tool, session.profileId, SYSTEM_ROOT))
+    await persistSharedProfileData(session.tool, session.profile, SYSTEM_ROOT)
+  })()
   pendingProfileWrites.add(session.persistPromise)
   session.persistPromise.catch((error) => {
     console.error(`[PROFILE SHARE] ${String(error.message || error)}`)
@@ -172,7 +194,7 @@ function flushInstallProgress(job) {
   if (!job.pendingProgress || job.settled) return
   const payload = job.pendingProgress
   job.pendingProgress = null
-  const signature = `${payload.percent}:\u0000${payload.line}`
+  const signature = `${payload.percent}:\u0000${payload.line}:${payload.elapsedSeconds}`
   if (signature === job.lastProgressSignature) return
   job.lastProgressSignature = signature
   broadcastInstall(job, 'install:progress', payload)
@@ -184,7 +206,8 @@ function queueInstallProgress(job, immediate = false) {
     profileId: job.profileId,
     line: job.lastLine,
     percent: job.percent,
-    logAvailable: true
+    logAvailable: true,
+    elapsedSeconds: Math.floor((Date.now() - job.startedAt) / 1000)
   }
   if (immediate) {
     flushInstallProgress(job)
@@ -256,6 +279,7 @@ function createWindow(initialContext = null) {
     roundedCorners: true,
     hasShadow: false,
     show: false,
+    opacity: visualTestMode ? 1 : 0,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -286,6 +310,8 @@ function createWindow(initialContext = null) {
   }
   applyWindowShape(newWin)
   newWin.on('resize', scheduleShape)
+  newWin.on('show', () => { if (!visualTestMode) animateWindow(newWin, 'show') })
+  newWin.on('restore', () => { if (!visualTestMode) animateWindow(newWin, 'show') })
 
   newWin.webContents.on('did-fail-load', (e, code, desc) => {
     console.error(`[DID FAIL LOAD] ${code}: ${desc}`)
@@ -310,6 +336,7 @@ function createWindow(initialContext = null) {
   })
 
   newWin.on('closed', () => {
+    clearWindowAnimation(newWin)
     clearTimeout(shapeTimer)
     killPtyForSender(webContentsId).catch((error) => console.error(`[PROFILE CLOSE] ${String(error.message || error)}`))
     for (const job of installJobs.values()) job.subscribers.delete(webContentsId)
@@ -401,6 +428,12 @@ ipcMain.handle('window:open-tool', async (event, toolId, profileId = null) => {
   if (profileId !== null) {
     const profile = await profileStore.get(tool.id, profileId)
     if (!profile) return { ok: false, error: 'Profile not found' }
+    const existing = ptyRegistry.entries().find(([, session]) => session.toolId === tool.id && session.profileId === profile.id)
+    if (existing) {
+      const content = webContents.fromId(existing[0])
+      const win = content && BrowserWindow.fromWebContents(content)
+      if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); return { ok: true, reused: true } }
+    }
     if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) {
       return { ok: false, error: 'This profile does not have its own CLI installation yet' }
     }
@@ -412,6 +445,7 @@ ipcMain.handle('window:open-tool', async (event, toolId, profileId = null) => {
 ipcMain.handle('profiles:list', async (event, toolId) => {
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found', profiles: [] }
+  for (const job of installJobs.values()) { if (job.toolId === tool.id) job.subscribers.add(event.sender.id) }
   return { ok: true, profiles: profilesWithInstallState(tool, await profileStore.list(tool.id)), capabilities: sharingCapabilities(tool.id) }
 })
 
@@ -511,6 +545,11 @@ ipcMain.on('win:close', (event) => {
   }
 })
 
+ipcMain.on('win:minimize', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) animateWindow(win, 'hide', () => { win.minimize(); win.setOpacity(1) })
+})
+
 ipcMain.handle('win:get-bounds', (event) => {
   const targetWin = BrowserWindow.fromWebContents(event.sender)
   return targetWin && !targetWin.isDestroyed() ? targetWin.getBounds() : null
@@ -562,131 +601,112 @@ ipcMain.handle('tool:check', (event, id, profileId = DEFAULT_PROFILE_ID) => {
   }
 })
 
-ipcMain.handle('tool:install', async (event, id, profileId = DEFAULT_PROFILE_ID) => {
+async function readProfileVersion(tool, profileId, fresh = false) {
+  if (tool.installer?.type !== 'npm') await consoleGuard.ready()
+  return installedVersion(tool, SYSTEM_ROOT, profileId, {
+    fresh, watch: (pid) => consoleGuard.watch(pid), unwatch: (pid) => consoleGuard.unwatch(pid)
+  })
+}
+
+async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRelease = null) {
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
   let profile
-  try {
-    profile = await profileStore.get(tool.id, profileId)
-  } catch (error) {
-    return { ok: false, error: String(error.message || error) }
-  }
+  try { profile = await profileStore.get(tool.id, profileId) } catch (error) { return { ok: false, error: error.message } }
   if (!profile) return { ok: false, error: 'Profile not found' }
-  const jobKey = profileInstallKey(tool.id, profile.id)
-  if (profileHasActiveSession(tool.id, profile.id)) return { ok: false, error: 'Close this profile before installing or updating it' }
-
-  if (!tool.installer) {
-    safeSend(event.sender.id, 'install:done', {
-      toolId: tool.id,
-      profileId: profile.id,
-      ok: false,
-      manual: true,
-      hint: tool.hint || 'This tool requires manual installation.'
-    })
-    return { ok: false, manual: true }
-  }
-
-  const existingJob = installJobs.get(jobKey)
-  if (existingJob) {
-    existingJob.subscribers.add(event.sender.id)
-    safeSend(event.sender.id, 'install:progress', {
-      toolId: tool.id,
-      profileId: profile.id,
-      line: existingJob.lastLine || `Installing ${tool.name}...`,
-      percent: existingJob.percent,
-      logAvailable: true
-    })
+  if (quitting) return { ok: false, busy: true, error: 'OmniShell is closing' }
+  const key = profileInstallKey(tool.id, profile.id)
+  if (profileHasActiveSession(tool.id, profile.id)) return { ok: false, busy: true, error: 'Close this profile before updating it' }
+  if (!tool.installer) return { ok: false, manual: true, error: 'This tool requires manual installation' }
+  const existing = installJobs.get(key)
+  if (existing) {
+    if (senderId > 0) existing.subscribers.add(senderId)
+    queueInstallProgress(existing, true)
     return { ok: true, joined: true }
   }
-
-  const plan = createInstallPlan(tool, __dirname, SYSTEM_ROOT, profile.id)
-  if (!plan) return { ok: false, error: 'No installer is configured for this tool' }
-
   let reporter
   try {
     reporter = createInstallReporter({ ...tool, id: installLogId(tool.id, profile.id), name: `${tool.name} / ${profile.name}` }, SYSTEM_ROOT)
-    installHistory.set(jobKey, reporter.logPath)
-  } catch (error) {
-    return { ok: false, error: `Installer log could not be created: ${error.message}` }
-  }
-
-  let proc
-  try {
-    proc = spawn(plan.command, plan.args, {
-      cwd: plan.cwd,
-      env: createInstallEnvironment(tool, process.env, SYSTEM_ROOT, profile.id),
-      windowsHide: true
-    })
-  } catch (error) {
-    reporter.feed('error', error.message)
-    reporter.finish('failed to start')
-    installHistory.set(jobKey, reporter.logPath)
-    return { ok: false, error: `Installer could not start: ${error.message}` }
-  }
+  } catch (error) { return { ok: false, error: `Could not create installer log: ${error.message}` } }
   const job = {
-    key: jobKey,
-    toolId: tool.id,
-    profileId: profile.id,
-    proc,
-    reporter,
-    subscribers: new Set([event.sender.id]),
-    lastLine: `Preparing ${tool.name} installer...`,
-    percent: 1,
-    cancelled: false,
-    settled: false,
-    pendingProgress: null,
-    progressTimer: null,
-    lastProgressSignature: ''
+    key, toolId: tool.id, profileId: profile.id, proc: null, reporter,
+    subscribers: new Set([...sendTargets.keys(), senderId].filter((value) => value > 0)),
+    lastLine: 'Checking the latest release...', percent: 1, startedAt: Date.now(), lastActivity: Date.now(),
+    cancelled: false, settled: false, pendingProgress: null, progressTimer: null, lastProgressSignature: ''
   }
-  installJobs.set(jobKey, job)
-
+  installJobs.set(key, job)
+  installHistory.set(key, reporter.logPath)
   queueInstallProgress(job, true)
-
-  const feed = (streamName, chunk) => {
-    job.lastLine = reporter.feed(streamName, chunk) || job.lastLine
-    job.percent = Math.max(job.percent, reporter.progress, inferInstallPercent(tool, job.lastLine, job.percent))
-    queueInstallProgress(job)
-  }
-
-  proc.stdout.on('data', (chunk) => feed('stdout', chunk))
-  proc.stderr.on('data', (chunk) => feed('stderr', chunk))
-
-  const finish = (ok, error = '') => {
+  const heartbeat = setInterval(() => {
     if (job.settled) return
-    if (ok) {
-      job.percent = 100
-      job.lastLine = `${tool.name} installed and verified`
+    if (job.proc && Date.now() - job.lastActivity > 5 * 60 * 1000 && !job.cancelled) {
+      job.failure = 'The installer stopped responding. Check the connection and retry.'
+      job.cancelled = true
+      terminateProcessTree(job.proc)
+    }
+    queueInstallProgress(job)
+  }, 1000)
+  heartbeat.unref?.()
+  job.completion = (async () => {
+    let result
+    try {
+      const before = await readProfileVersion(tool, profile.id)
+      const release = knownRelease || await releaseResolver.resolve(tool, true)
+      if (job.cancelled || quitting) throw new Error('Installation cancelled.')
+      job.percent = 3
+      job.lastLine = before ? `Updating ${tool.name}: ${before} → ${release.version}` : `Installing ${tool.name} ${release.version}`
+      reporter.feed('info', `${job.lastLine}\n`)
       queueInstallProgress(job, true)
-    } else {
+      const plan = createInstallPlan(tool, __dirname, SYSTEM_ROOT, profile.id, release.version)
+      if (!plan) throw new Error('No installer is configured for this tool')
+      const code = await new Promise((resolve, reject) => {
+        const proc = spawn(plan.command, plan.args, {
+          cwd: plan.cwd, env: createInstallEnvironment(tool, process.env, SYSTEM_ROOT, profile.id), windowsHide: true
+        })
+        job.proc = proc
+        const feed = (stream, chunk) => {
+          job.lastActivity = Date.now()
+          job.lastLine = reporter.feed(stream, chunk) || job.lastLine
+          job.percent = Math.max(job.percent, reporter.progress, inferInstallPercent(tool, job.lastLine, job.percent))
+          queueInstallProgress(job)
+        }
+        proc.stdout.on('data', (chunk) => feed('stdout', chunk))
+        proc.stderr.on('data', (chunk) => feed('stderr', chunk))
+        proc.once('error', reject)
+        proc.once('close', resolve)
+      })
+      if (job.cancelled || quitting) throw new Error(job.failure || 'Installation cancelled.')
+      if (code !== 0) throw new Error(reporter.failure(`Installer exited with code ${code}`))
+      if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) throw new Error('The local executable was not found after installation')
+      job.lastLine = 'Checking installed version...'
+      job.percent = Math.max(job.percent, 96)
+      queueInstallProgress(job, true)
+      const actual = await readProfileVersion(tool, profile.id, true)
+      if (!actual || newerVersion(release.version, actual)) {
+        throw new Error(`Expected ${release.version}, but the installed CLI reports ${actual || 'an unknown version'}`)
+      }
+      result = { ok: true, version: actual }
+      job.percent = 100
+      job.lastLine = `${tool.name} ${actual} is ready`
+      queueInstallProgress(job, true)
+    } catch (error) {
+      const message = String(error.message || error)
+      reporter.feed('error', `${message}\n`)
+      result = { ok: false, error: message, cancelled: job.cancelled && !job.failure }
+    } finally {
+      clearInterval(heartbeat)
       clearTimeout(job.progressTimer)
-      job.progressTimer = null
+      job.settled = true
+      installJobs.delete(key)
+      reporter.finish(result?.ok ? 'success' : (result?.cancelled ? 'cancelled' : 'failed'))
+      broadcastInstall(job, 'install:done', { toolId: tool.id, profileId: profile.id, ...result, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)), logAvailable: true })
     }
-    job.settled = true
-    installJobs.delete(jobKey)
-    installHistory.set(jobKey, reporter.logPath)
-    reporter.finish(ok ? 'success' : (job.cancelled ? 'cancelled' : 'failed'))
-    broadcastInstall(job, 'install:done', {
-      toolId: tool.id,
-      profileId: profile.id,
-      ok,
-      cancelled: job.cancelled,
-      error: reporter.failure(error || job.lastLine),
-      logAvailable: true
-    })
-  }
-
-  proc.on('error', (error) => finish(false, error.message))
-  proc.on('close', (code) => {
-    const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
-    if (job.cancelled) {
-      finish(false, 'Installation cancelled.')
-      return
-    }
-    finish(code === 0 && Boolean(executable), executable ? '' : `Installer exited with code ${code}, but the local executable was not found.`)
-  })
-
+    return result
+  })()
   return { ok: true, joined: false }
-})
+}
+
+ipcMain.handle('tool:install', (event, id, profileId) => installTool(event.sender.id, id, profileId))
 
 ipcMain.handle('tool:cancel-install', (event, id, profileId = DEFAULT_PROFILE_ID) => {
   let jobKey
@@ -749,6 +769,8 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     const launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
     if (!launchExe) return { ok: false, error: 'The isolated local installation was not found' }
 
+    await consoleGuard.ready()
+    if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
     const pty = require('node-pty')
     const basePtyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile.id)
     const launchPolicy = await prepareProfileLaunch(tool, profile, profileDir(tool, profile.id, SYSTEM_ROOT), basePtyEnv)
@@ -782,6 +804,7 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
       return { ok: false, error: 'The isolated executable disappeared before launch' }
     }
 
+    consoleGuard.watch(ptyProc.pid)
     let session = null
     let resolveExit
     const exited = new Promise((resolve) => { resolveExit = resolve })
@@ -811,6 +834,7 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
         earlyExit = { exitCode }
         return
       }
+      consoleGuard.unwatch(ptyProc.pid)
       resolveExit()
       finishSessionProfile(session)
       flushPtyOutput(senderId, session)
@@ -908,6 +932,8 @@ app.whenReady().then(() => {
   createWindow()
   createTray()
   setImmediate(loadInstallHistory)
+  consoleGuard.ready()
+  if (process.env.OMNISHELL_DISABLE_AUTO_UPDATE !== '1') autoUpdater.start().catch(console.error)
 
   globalShortcut.register('Ctrl+Alt+S', () => {
     if (windows.size === 0) {
@@ -935,14 +961,19 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (quitting) return
   quitting = true
+  autoUpdater.stop()
+  releaseResolver.cancel()
+  const installing = [...installJobs.values()]
+  for (const job of installing) { job.cancelled = true; if (job.proc) terminateProcessTree(job.proc) }
   const closing = killAllPtys()
-  Promise.allSettled([...closing, ...closingProfiles.values(), ...pendingProfileWrites]).then(() => {
+  Promise.allSettled([...closing, ...closingProfiles.values(), ...pendingProfileWrites, ...installing.map((job) => job.completion)]).then(() => {
     quitReady = true
     app.quit()
   })
 })
 
 app.on('will-quit', () => {
+  consoleGuard.stop()
   for (const job of installJobs.values()) {
     job.cancelled = true
     terminateProcessTree(job.proc)

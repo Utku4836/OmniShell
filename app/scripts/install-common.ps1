@@ -53,7 +53,11 @@ function Invoke-OmniTrackedDownload {
         $lastReported = $StartPercent - 1
         Write-OmniProgress -Percent $StartPercent -Message 'Download started'
 
-        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while ($true) {
+            $readTask = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $readTask.Wait(60000)) { throw 'The download stopped responding for 60 seconds.' }
+            $read = $readTask.GetAwaiter().GetResult()
+            if ($read -le 0) { break }
             $outputStream.Write($buffer, 0, $read)
             $downloaded += $read
             if ($totalBytes -and $totalBytes -gt 0) {
