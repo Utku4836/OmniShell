@@ -1,7 +1,7 @@
 {
   "name": "omnishell",
   "productName": "OmniShell",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "A fast Windows command center for isolated AI coding CLIs and real PTY sessions.",
   "author": "Utku4836",
   "license": "MIT",
