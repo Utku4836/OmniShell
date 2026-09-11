@@ -37,5 +37,6 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
+          name: OmniShell ${{ github.ref_name }}
+          body_path: docs/${{ github.ref_name }}.md
           files: dist/OmniShell.exe
