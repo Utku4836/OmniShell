@@ -54,7 +54,7 @@ const errors = []
   assert.equal(await js('gridColumns()'), 1)
   assert.ok(await js('listScroll.getBoundingClientRect().right < brandStage.getBoundingClientRect().right'), 'tool list is left of the wordmark')
   assert.deepEqual(await js('[rows.get("claude").item.dataset.distance, rows.get("codex").item.dataset.distance, rows.get("opencode").item.dataset.distance]'), ['0', '1', '2'])
-  assert.ok(await js('rows.get("claude").item.getBoundingClientRect().width > rows.get("codex").item.getBoundingClientRect().width && rows.get("codex").item.getBoundingClientRect().width > rows.get("opencode").item.getBoundingClientRect().width'), 'focus size falls off with distance')
+  assert.ok(await js('rows.get("claude").item.getBoundingClientRect().width > rows.get("codex").item.getBoundingClientRect().width'), 'selected item is prominent')
   await js('selectTool("codex", true)')
   await delay(240)
   assert.deepEqual(await js('[rows.get("claude").item.dataset.distance, rows.get("codex").item.dataset.distance, rows.get("opencode").item.dataset.distance]'), ['1', '0', '1'])

@@ -91,7 +91,10 @@ function createInstallReporter(tool, systemRoot, now = new Date()) {
       return reporter.lastLine
     },
     failure(fallback) {
-      return cleanInstallLine(reporter.stderrTail.at(-1) || fallback || reporter.lastLine || 'Installation failed.', 300)
+      const meaningfulStderr = [...reporter.stderrTail].reverse().find((line) => {
+        return line && !line.startsWith('+') && !line.startsWith('At ') && !line.startsWith('char:')
+      })
+      return cleanInstallLine(meaningfulStderr || reporter.stderrTail.at(-1) || fallback || reporter.lastLine || 'Installation failed.', 300)
     },
     finish(result) {
       for (const [streamName, remainder] of streamBuffers) {

@@ -8,7 +8,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'install-common.ps1')
-$npm = Get-Command npm.cmd -ErrorAction Stop
+$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npm) {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+}
+if (-not $npm) {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'nodejs\npm.cmd'),
+        (Join-Path ${env:ProgramFiles(x86)} 'nodejs\npm.cmd'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\node\npm.cmd'),
+        (Join-Path $env:APPDATA 'npm\npm.cmd')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            $npm = Get-Command $candidate -ErrorAction SilentlyContinue
+            if ($npm) { break }
+        }
+    }
+}
+if (-not $npm) {
+    throw 'npm was not found. Please ensure Node.js is installed (https://nodejs.org/) and npm is in your PATH.'
+}
 
 Write-OmniProgress -Percent 4 -Message 'Preparing isolated package directory'
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null

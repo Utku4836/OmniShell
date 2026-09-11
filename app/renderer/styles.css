@@ -169,13 +169,13 @@ button { font: inherit; }
 }
 
 .cli-item[data-distance="1"] {
-  transform: translate3d(0, 0, 0) scale(0.78);
-  opacity: 0.7;
-  color: #aaa29d;
+  transform: translate3d(0, 0, 0) scale(0.58);
+  opacity: 0.68;
+  color: #8d8580;
 }
 
 .cli-item.selected {
-  transform: translate3d(0, 0, 0) scale(1);
+  transform: translate3d(0, 0, 0) scale(0.90);
   opacity: 1;
   color: #f1eeec;
 }

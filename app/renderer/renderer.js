@@ -1419,11 +1419,12 @@ function setupContextMenu() {
 }
 
 function setupProfileControls() {
-  profileList.addEventListener('pointerover', (event) => {
-    const row = event.target.closest('.profile-row')
-    if (row) setSelectedProfile(row.dataset.profileId)
-  })
   profileList.addEventListener('click', (event) => {
+    const row = event.target.closest('.profile-row')
+    if (!row) return
+    setSelectedProfile(row.dataset.profileId)
+  })
+  profileList.addEventListener('dblclick', (event) => {
     const row = event.target.closest('.profile-row')
     if (!row) return
     setSelectedProfile(row.dataset.profileId)

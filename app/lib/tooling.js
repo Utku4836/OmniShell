@@ -228,10 +228,28 @@ const PASSTHROUGH_ENV_KEYS = new Set([
   'no_proxy'
 ])
 
+const PASSTHROUGH_UPPER_KEYS = new Set([...PASSTHROUGH_ENV_KEYS].map((k) => k.toUpperCase()))
+
 function copySafeBaseEnvironment(baseEnv) {
   const result = {}
+  const seenUpperKeys = new Map()
   for (const [key, value] of Object.entries(baseEnv || {})) {
-    if (PASSTHROUGH_ENV_KEYS.has(key) && typeof value === 'string') result[key] = value
+    if (typeof value !== 'string') continue
+    const upper = key.toUpperCase()
+    if (!PASSTHROUGH_UPPER_KEYS.has(upper)) continue
+
+    if (process.platform === 'win32') {
+      const existingKey = seenUpperKeys.get(upper)
+      if (existingKey) {
+        if (upper === 'PATH') {
+          const parts = [result[existingKey], value].filter(Boolean)
+          result[existingKey] = [...new Set(parts.join(path.delimiter).split(path.delimiter))].join(path.delimiter)
+        }
+        continue
+      }
+      seenUpperKeys.set(upper, key)
+    }
+    result[key] = value
   }
   return result
 }
@@ -315,8 +333,27 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
   env.npm_config_update_notifier = 'false'
 
   const localBinDirectories = [path.join(runtimeRoot, 'node_modules', '.bin'), path.join(runtimeRoot, 'bin'), runtimeRoot]
-  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH'
-  env[pathKey] = localBinDirectories.join(path.delimiter) + path.delimiter + (env[pathKey] || '')
+  const pathKeys = Object.keys(env).filter((key) => key.toUpperCase() === 'PATH')
+  const primaryPathKey = pathKeys[0] || (process.platform === 'win32' ? 'Path' : 'PATH')
+  const existingPath = pathKeys.map((k) => env[k]).filter(Boolean).join(path.delimiter)
+  for (const k of pathKeys) delete env[k]
+
+  const paths = [localBinDirectories.join(path.delimiter)]
+  if (existingPath) paths.push(existingPath)
+
+  if (process.platform === 'win32') {
+    const standardNodePaths = [
+      process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'nodejs') : 'C:\\Program Files\\nodejs',
+      process.env['ProgramFiles(x86)'] ? path.join(process.env['ProgramFiles(x86)'], 'nodejs') : 'C:\\Program Files (x86)\\nodejs'
+    ]
+    for (const nodePath of standardNodePaths) {
+      if (fs.existsSync(nodePath) && !paths.join(path.delimiter).toLowerCase().includes(nodePath.toLowerCase())) {
+        paths.push(nodePath)
+      }
+    }
+  }
+
+  env[primaryPathKey] = paths.join(path.delimiter)
 
   return env
 }
