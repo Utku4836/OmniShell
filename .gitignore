@@ -9,6 +9,15 @@ coverage/
 dist/
 out/
 
+# Local-only development tools and review notes
+app/test/
+app/scripts/generate-brand-assets.js
+app/scripts/generate-readme-assets.js
+app/scripts/run-readme-assets.js
+app/scripts/tool-pty-health.js
+app/scripts/pty-*.js
+docs/review-*.md
+
 # OS & Temp
 .DS_Store
 Thumbs.db

@@ -128,15 +128,10 @@ The launcher installs the locked dependencies on first run. For development comm
 cd app
 npm ci
 npm run check
-npm test
-npm run test:ui
-npm run health
 npm run dist
 ```
 
-The UI smoke command uses temporary profiles and hidden Electron windows. The health command requires local CLI installations and checks their version commands through ConPTY. The portable build is written to `dist/`.
-
-To regenerate the README artwork from the app's interface, run `npm run docs:assets` on Windows. The capture uses example profiles in a temporary directory and writes the images to `docs/images/`.
+The portable build is written to `dist/`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions and [SECURITY.md](SECURITY.md) for reporting a security issue.
 
