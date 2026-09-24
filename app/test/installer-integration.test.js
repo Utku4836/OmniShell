@@ -7,7 +7,7 @@ const http = require('node:http')
 const zlib = require('node:zlib')
 const crypto = require('node:crypto')
 const { spawn } = require('node:child_process')
-const { createInstallPlan, createInstallEnvironment, profileRuntimeDir } = require('../lib/tooling')
+const { DEFAULT_PROFILE, createInstallPlan, createInstallEnvironment, profileRuntimeDir } = require('../lib/tooling')
 const { installedVersion } = require('../lib/tool-updates')
 
 function tarball(version) {
@@ -45,7 +45,7 @@ test('the real npm installer upgrades a pinned package using a local registry', 
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await fs.rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100})})
   const tool={id:'fixture',dir:'Fixture',bin:'fixture',name:'Fixture',installer:{type:'npm',package:'omnishell-update-fixture'}}
   async function install(version) {
-    const plan=createInstallPlan(tool,path.resolve(__dirname,'..'),root,'default',version)
+    const plan=createInstallPlan(tool,path.resolve(__dirname,'..'),root,DEFAULT_PROFILE,version)
     const env=createInstallEnvironment(tool,process.env,root)
     Object.assign(env,{npm_config_registry:`http://127.0.0.1:${server.address().port}`,npm_config_proxy:'',npm_config_https_proxy:'',npm_config_noproxy:'127.0.0.1'})
     const result=await new Promise((resolve,reject)=>{
@@ -59,7 +59,7 @@ test('the real npm installer upgrades a pinned package using a local registry', 
     return installedVersion(tool,root)
   }
   assert.equal(await install('1.0.0'),'1.0.0')
-  const manifest=JSON.parse(await fs.readFile(path.join(profileRuntimeDir(tool,'default',root),'package.json'),'utf8'))
+  const manifest=JSON.parse(await fs.readFile(path.join(profileRuntimeDir(tool,DEFAULT_PROFILE,root),'package.json'),'utf8'))
   assert.equal(manifest.dependencies['omnishell-update-fixture'],'1.0.0')
   assert.equal(await install('2.0.0'),'2.0.0')
 })

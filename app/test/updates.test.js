@@ -4,7 +4,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { AutoUpdater, ReleaseResolver, installedVersion, newerVersion } = require('../lib/tool-updates')
-const { findTool, createInstallPlan, createIsolatedEnvironment, profileRuntimeDir } = require('../lib/tooling')
+const { DEFAULT_PROFILE, findTool, createInstallPlan, createIsolatedEnvironment, profileRuntimeDir } = require('../lib/tooling')
 const { prepareProfileLaunch, finalizeProfileLaunch } = require('../lib/profile-launch')
 
 async function temp(t) {
@@ -15,17 +15,17 @@ async function temp(t) {
 
 test('installation plans explicitly select the resolved version instead of retaining an old pin', async (t) => {
   const root = await temp(t), tool = findTool('codex')
-  const plan = createInstallPlan(tool, path.resolve(__dirname, '..'), root, 'default', '1.2.3')
+  const plan = createInstallPlan(tool, path.resolve(__dirname, '..'), root, DEFAULT_PROFILE, '1.2.3')
   if (process.platform === 'win32') assert.equal(plan.args[plan.args.indexOf('-PackageVersion') + 1], '1.2.3')
   else assert.ok(plan.args.includes('@openai/codex@1.2.3'))
   const script = await fs.readFile(path.join(__dirname, '../scripts/install-npm.ps1'), 'utf8')
   assert.match(script, /PackageName, \$PackageVersion/)
 })
 
-test('CLI self-updates and normal installs target the same isolated runtime', async (t) => {
-  const root = await temp(t), tool = findTool('codex'), profileId = `p_${'1'.repeat(32)}`
-  const env = createIsolatedEnvironment(tool, { PATH: '/system-bin', npm_config_prefix: 'global-prefix' }, root, profileId)
-  assert.equal(env.npm_config_prefix, profileRuntimeDir(tool, profileId, root))
+test('CLI self-updates and normal installs target the shared tool root', async (t) => {
+  const root = await temp(t), tool = findTool('codex'), profile = { id: `p_${'1'.repeat(32)}`, name: 'Work' }
+  const env = createIsolatedEnvironment(tool, { PATH: '/system-bin', npm_config_prefix: 'global-prefix' }, root, profile)
+  assert.equal(env.npm_config_prefix, profileRuntimeDir(tool, profile, root))
   assert.notEqual(env.HOME, env.npm_config_prefix)
 })
 
@@ -56,7 +56,7 @@ test('automatic updates defer active profiles, skip missing tools, and reuse the
   const installed = []
   const updater = new AutoUpdater({
     tools: [tool], systemRoot: root, listProfiles: async () => [{id:'default'},{id:'missing'}],
-    isBusy: () => busy, isInstalled: (_tool, _root, id) => id === 'default',
+    isBusy: () => busy, isInstalled: (_tool, _root, profile) => profile.id === 'default',
     readVersion: async () => '1.0.0', resolver: { resolve: async () => ({version:'2.0.0'}) },
     install: async (_tool, id) => { installed.push(id); return {ok:true} }, now: () => now
   })
@@ -71,6 +71,24 @@ test('automatic updates defer active profiles, skip missing tools, and reuse the
   now += 4 * 60 * 60 * 1000
   await updater.tick()
   assert.deepEqual(installed, ['default','default'])
+})
+
+test('automatic updates check a shared CLI only once with several profiles', async (t) => {
+  const root = await temp(t), tool = findTool('codex')
+  let checks = 0, installs = 0
+  const updater = new AutoUpdater({
+    tools: [tool], systemRoot: root,
+    listProfiles: async () => [{ id: 'default' }, { id: `p_${'a'.repeat(32)}`, name: 'Work' }],
+    isBusy: () => false, isInstalled: () => true,
+    readVersion: async () => { checks += 1; return '1.0.0' },
+    resolver: { resolve: async () => ({ version: '2.0.0' }) },
+    install: async () => { installs += 1; return { ok: true } }
+  })
+  t.after(() => updater.stop())
+  await updater.tick()
+  assert.equal(checks, 1)
+  assert.equal(installs, 1)
+  assert.deepEqual(Object.keys(updater.state), ['codex'])
 })
 
 test('an update discovered while a profile becomes busy is deferred', async (t) => {
@@ -95,13 +113,13 @@ test('update comparison does not downgrade stable or newer installations', () =>
   assert.equal(newerVersion('1.10.0','1.9.9'),true)
 })
 
-test('the installed package version is read from the selected profile', async (t) => {
+test('the installed package version is shared by every profile', async (t) => {
   const root = await temp(t), tool = findTool('codex')
-  const file = path.join(profileRuntimeDir(tool,'default',root),'node_modules/@openai/codex/package.json')
+  const file = path.join(profileRuntimeDir(tool,DEFAULT_PROFILE,root),'node_modules/@openai/codex/package.json')
   await fs.mkdir(path.dirname(file),{recursive:true})
   await fs.writeFile(file,'{"version":"1.2.3"}')
   assert.equal(await installedVersion(tool,root),'1.2.3')
-  assert.equal(await installedVersion(tool,root,`p_${'2'.repeat(32)}`),null)
+  assert.equal(await installedVersion(tool,root,{ id: `p_${'2'.repeat(32)}`, name: 'Other' }),'1.2.3')
 })
 
 test('Claude resumes the persisted effort without replacing other configuration', async (t) => {

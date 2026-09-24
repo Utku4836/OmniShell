@@ -13,12 +13,14 @@ const profileOverlay = $('profile-overlay')
 const profileCard = profileOverlay.querySelector('.profile-card')
 const profileTitle = $('profile-title')
 const profileList = $('profile-list')
+const profileHint = $('profile-hint')
 const profileEditor = $('profile-editor')
 const profileEditorLabel = $('profile-editor-label')
 const profileName = $('profile-name')
 const profileCreateSettings = $('profile-create-settings')
 const profileStatus = $('profile-status')
 const profileNew = $('profile-new')
+const profileOpen = $('profile-open')
 const profileRename = $('profile-rename')
 const profileInstall = $('profile-install')
 const profileSettingsOpen = $('profile-settings-open')
@@ -442,7 +444,7 @@ function renderProfileList(profiles) {
     }
     row.querySelector('.profile-row-name').textContent = profile.name
     row.dataset.installed = String(Boolean(profile.installed))
-    row.title = profile.installed ? profile.name : `${profile.name} — isolated CLI installation required`
+    row.title = profile.installed ? profile.name : `${profile.name} — CLI installation required`
     row.classList.toggle('selected', profile.id === selectedProfileId)
     row.setAttribute('aria-selected', String(profile.id === selectedProfileId))
     fragment.appendChild(row)
@@ -460,7 +462,18 @@ const PROFILE_SETTING_LABELS = {
   fullPermission: 'FULL PERMISSION',
   sharedSessions: 'SHARED SESSIONS',
   sharedModels: 'SHARED MODELS',
-  sharedConfig: 'SHARED CONFIG'
+  sharedConfig: 'SHARED CONFIG',
+  sharedSkills: 'SHARED SKILLS',
+  sharedMcp: 'SHARED MCP'
+}
+
+const PROFILE_SETTING_HELP = {
+  fullPermission: 'Run this CLI with its approval bypass enabled.',
+  sharedSessions: 'Use session history across this CLI’s profiles.',
+  sharedModels: 'Reuse this CLI’s model data and cache.',
+  sharedConfig: 'Share supported CLI settings; skills and MCP stay separate.',
+  sharedSkills: 'Use the same skills across this CLI’s profiles.',
+  sharedMcp: 'Use the same MCP servers across this CLI’s profiles.'
 }
 
 function normalizedSettings(settings = {}) {
@@ -478,7 +491,11 @@ function renderSettingsOptions(container) {
     const enabled = supported && profileSettingsDraft?.[key] === true
     button.disabled = !supported
     button.setAttribute('aria-pressed', String(enabled))
-    button.textContent = `${enabled ? '[x]' : '[ ]'} ${label}${supported ? '' : ' / N/A'}`
+    const heading = document.createElement('span')
+    heading.textContent = `${enabled ? '[x]' : '[ ]'} ${label}${supported ? '' : ' / N/A'}`
+    const help = document.createElement('small')
+    help.textContent = supported ? PROFILE_SETTING_HELP[key] : 'This CLI does not support this option.'
+    button.append(heading, help)
     fragment.appendChild(button)
   }
   container.replaceChildren(fragment)
@@ -514,7 +531,7 @@ function showProfileSettings() {
 }
 
 function installStatusText(state) {
-  const elapsed = state.elapsedSeconds ? ` ? ${state.elapsedSeconds}s` : ''
+  const elapsed = state.elapsedSeconds ? ` · ${state.elapsedSeconds}s` : ''
   return `${hashBar(state.percent)} ${normalizePercent(state.percent)}%${elapsed}\n${state.line || 'Preparing installer...'}`
 }
 
@@ -523,15 +540,27 @@ function updateProfileActions() {
   const state = profileInstallStates.get(`${profileDialogToolId}:${profile?.id}`)
   profileRename.disabled = !profile || Boolean(state?.installing)
   profileSettingsOpen.disabled = !profile || Boolean(state?.installing)
+  profileOpen.disabled = !profile || !profile.installed || Boolean(state?.installing)
   profileInstall.classList.toggle('hidden', !profile)
   profileInstall.disabled = !profile
   profileInstall.textContent = state?.installing ? 'CANCEL' : (profile?.installed ? 'UPDATE' : 'INSTALL')
   profileStatus.textContent = state?.installing ? installStatusText(state) : (state?.message || '')
+  profileHint.textContent = !profile
+    ? 'Select a profile to continue.'
+    : state?.installing
+      ? 'Installation is shared by every profile of this CLI.'
+      : profile.installed
+        ? 'Select OPEN or double-click a profile to start.'
+        : 'Install this CLI once to use all its profiles.'
 }
 
 function setSelectedProfile(profileId, focus = false) {
   if (!profileRows.has(profileId)) return
   const previousId = selectedProfileId
+  if (previousId !== profileId) {
+    if (profileEditorMode) hideProfileEditor()
+    if (!profileSettings.classList.contains('hidden')) hideProfileSettings()
+  }
   selectedProfileId = profileId
   for (const id of new Set([previousId, profileId])) {
     const row = profileRows.get(id)
@@ -619,7 +648,7 @@ async function openProfilePicker(tool, preferredProfileId = null, mode = 'curren
       : (profiles[0]?.id || null)
     renderProfileList(profiles)
     const selected = profiles.find((profile) => profile.id === selectedProfileId)
-    if (selected && !selected.installed && !profileInstallStates.get(`${tool.id}:${selected.id}`)?.installing) profileStatus.textContent = 'This profile needs its own CLI installation.'
+    if (selected && !selected.installed && !profileInstallStates.get(`${tool.id}:${selected.id}`)?.installing) profileStatus.textContent = 'This CLI needs to be installed once for all its profiles.'
     profileRows.get(selectedProfileId)?.focus({ preventScroll: true })
   } catch (error) {
     profileStatus.textContent = String(error.message || error)
@@ -666,7 +695,7 @@ async function saveProfileEditor() {
     renderProfileList(profiles)
     profileRows.get(selectedProfileId)?.focus({ preventScroll: true })
     const selected = profiles.find((profile) => profile.id === selectedProfileId)
-    if (selected && !selected.installed) profileStatus.textContent = 'This profile needs its own CLI installation.'
+    if (selected && !selected.installed) profileStatus.textContent = 'This CLI needs to be installed once for all its profiles.'
   } catch (error) {
     profileStatus.textContent = String(error.message || error)
   } finally {
@@ -1179,9 +1208,10 @@ function setupIpcListeners() {
   })
   window.api.onInstallProgress((data) => {
     const profileId = data.profileId || 'default'
-    profileInstallStates.set(`${data.toolId}:${profileId}`, { ...data, installing: true })
-    if (profileDialogToolId === data.toolId && selectedProfileId === profileId) updateProfileActions()
-    if (profileId !== 'default') return
+    const profiles = profilesCache.get(data.toolId) || []
+    for (const profile of profiles) profileInstallStates.set(`${data.toolId}:${profile.id}`, { ...data, installing: true })
+    if (!profiles.length) profileInstallStates.set(`${data.toolId}:${profileId}`, { ...data, installing: true })
+    if (profileDialogToolId === data.toolId) updateProfileActions()
     pendingProgress.set(data.toolId, data)
     if (!progressFrame) progressFrame = requestAnimationFrame(flushProgressEvents)
   })
@@ -1189,25 +1219,23 @@ function setupIpcListeners() {
   window.api.onInstallDone((data) => {
     const profileId = data.profileId || 'default'
     const profiles = profilesCache.get(data.toolId) || []
-    const profile = profiles.find((candidate) => candidate.id === profileId)
-    if (profile) {
-      if (data.ok) profile.installed = true
+    for (const profile of profiles) {
+      profile.installed = Boolean(data.installed)
       profile.installing = false
+      profileInstallStates.set(`${data.toolId}:${profile.id}`, {
+        installing: false,
+        message: data.ok ? 'CLI ready. Select a profile to open it.'
+          : (data.cancelled ? 'Installation cancelled.' : (data.error || 'Installation failed.'))
+      })
     }
-    profileInstallStates.set(`${data.toolId}:${profileId}`, {
-      installing: false,
-      message: data.ok ? 'CLI ready. Select a profile to open it.'
-        : (data.cancelled ? 'Installation cancelled.' : (data.error || 'Installation failed.'))
-    })
+    if (!profiles.length) profileInstallStates.set(`${data.toolId}:${profileId}`, { installing: false })
     if (profileDialogToolId === data.toolId) renderProfileList(profiles)
     const tool = getTool(data.toolId)
     if (!tool) return
-    if (profileId === 'default') {
-      pendingProgress.delete(data.toolId)
-      if (data.manual) setState(data.toolId, { state: 'manual', hint: data.hint, logAvailable: data.logAvailable })
-      else if (data.ok || data.installed) setState(data.toolId, { state: 'ready', percent: 100, err: data.error || '', logAvailable: data.logAvailable })
-      else setState(data.toolId, { state: 'failed', cancelled: data.cancelled, err: data.error || 'Installation failed.', logAvailable: data.logAvailable })
-    }
+    pendingProgress.delete(data.toolId)
+    if (data.manual) setState(data.toolId, { state: 'manual', hint: data.hint, logAvailable: data.logAvailable })
+    else if (data.ok || data.installed) setState(data.toolId, { state: 'ready', percent: 100, err: data.error || '', logAvailable: data.logAvailable })
+    else setState(data.toolId, { state: 'failed', cancelled: data.cancelled, err: data.error || 'Installation failed.', logAvailable: data.logAvailable })
     showToast(data.ok ? `${tool.name} is ready.` : (data.cancelled ? `${tool.name} installation cancelled.` : `${tool.name}: ${data.error || 'Installation failed.'}`))
   })
 
@@ -1431,6 +1459,7 @@ function setupProfileControls() {
     openSelectedProfile()
   })
   profileNew.addEventListener('click', () => showProfileEditor('create'))
+  profileOpen.addEventListener('click', openSelectedProfile)
   profileRename.addEventListener('click', () => showProfileEditor('rename'))
   profileSettingsOpen.addEventListener('click', showProfileSettings)
   profileInstall.addEventListener('click', beginProfileInstall)
@@ -1541,7 +1570,7 @@ function setupControls() {
       if (event.key === 'Escape') { event.preventDefault(); closeProfilePicker() }
       else if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'k') { event.preventDefault(); moveProfileSelection(-1) }
       else if (event.key === 'ArrowDown' || event.key.toLowerCase() === 'j') { event.preventDefault(); moveProfileSelection(1) }
-      else if (event.key === 'Enter') { event.preventDefault(); openSelectedProfile() }
+      else if (event.key === 'Enter' && !event.target.closest('button:not(.profile-row)')) { event.preventDefault(); openSelectedProfile() }
       else if (event.key.toLowerCase() === 'n') { event.preventDefault(); showProfileEditor('create') }
       else if (event.key.toLowerCase() === 'r') { event.preventDefault(); showProfileEditor('rename') }
       else if (event.key.toLowerCase() === 's') { event.preventDefault(); showProfileSettings() }

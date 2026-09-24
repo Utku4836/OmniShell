@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
-const { DEFAULT_PROFILE_ID, validateProfileId } = require('./profile-store')
+const { DEFAULT_PROFILE_ID, normalizeProfileName, validateProfileId } = require('./profile-store')
+const DEFAULT_PROFILE = Object.freeze({ id: DEFAULT_PROFILE_ID, name: 'Default' })
 
 const SYSTEM_ROOT = process.env.OMNISHELL_SYSTEM_ROOT
   ? path.resolve(process.env.OMNISHELL_SYSTEM_ROOT)
@@ -86,73 +87,51 @@ function toolDir(tool, systemRoot = SYSTEM_ROOT) {
   return path.join(systemRoot, tool.dir)
 }
 
-function profileDir(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
-  validateProfileId(profileId)
-  const runtimeRoot = toolDir(tool, systemRoot)
-  return profileId === DEFAULT_PROFILE_ID
-    ? runtimeRoot
-    : path.join(runtimeRoot, 'profiles', profileId)
+function profileDir(tool, profile = DEFAULT_PROFILE, systemRoot = SYSTEM_ROOT) {
+  validateProfileId(profile?.id)
+  const name = normalizeProfileName(profile.name)
+  if (name !== profile.name) throw new Error('Profile folder name is not normalized')
+  return path.join(toolDir(tool, systemRoot), 'Profiles', name)
 }
 
-function profileRuntimeDir(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
-  validateProfileId(profileId)
-  return profileId === DEFAULT_PROFILE_ID
-    ? toolDir(tool, systemRoot)
-    : path.join(profileDir(tool, profileId, systemRoot), 'runtime')
+function profileRuntimeDir(tool, profile = DEFAULT_PROFILE, systemRoot = SYSTEM_ROOT) {
+  return toolDir(tool, systemRoot)
 }
 
-function executableCandidates(tool, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
-  validateProfileId(profileId)
-  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}\u0000${profileId}`
-  const cached = EXECUTABLE_CANDIDATE_CACHE.get(cacheKey)
-  if (cached) return cached
-
-  const root = profileRuntimeDir(tool, profileId, systemRoot)
+function executableCandidatesAtRoot(tool, root) {
   const candidates = []
-
-  if (tool.installer && tool.installer.type === 'npm') {
-    const names = [tool.bin]
-    for (const name of names) {
-      for (const extension of ['.cmd', '.exe', '.bat', '']) {
-        candidates.push(path.join(root, 'node_modules', '.bin', name + extension))
-      }
-    }
-  }
-
   if (tool.installer?.type === 'npm') {
+    for (const extension of ['.cmd', '.exe', '.bat', '']) candidates.push(path.join(root, 'node_modules', '.bin', tool.bin + extension))
     for (const extension of ['.cmd', '.exe', '.bat']) candidates.push(path.join(root, tool.bin + extension))
   }
-
-  if (tool.id === 'agy') {
-    candidates.push(path.join(root, 'AppData', 'Local', 'agy', 'bin', 'agy.exe'))
-  }
-
+  if (tool.id === 'agy') candidates.push(path.join(root, 'AppData', 'Local', 'agy', 'bin', 'agy.exe'))
   if (tool.id === 'aider') {
     candidates.push(path.join(root, 'bin', 'aider.exe'))
     candidates.push(path.join(root, '.local', 'bin', 'aider.exe'))
   }
-
-  if (tool.id === 'goose') {
-    candidates.push(path.join(root, 'bin', 'goose.exe'))
-  }
-
+  if (tool.id === 'goose') candidates.push(path.join(root, 'bin', 'goose.exe'))
   if (tool.id === 'cursor-agent') {
     candidates.push(path.join(root, 'bin', 'cursor-agent.exe'))
     candidates.push(path.join(root, 'bin', 'cursor-agent.cmd'))
   }
+  return Object.freeze([...new Set(candidates)])
+}
 
-  const uniqueCandidates = Object.freeze([...new Set(candidates)])
+function executableCandidates(tool, systemRoot = SYSTEM_ROOT) {
+  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}`
+  const cached = EXECUTABLE_CANDIDATE_CACHE.get(cacheKey)
+  if (cached) return cached
+  const uniqueCandidates = executableCandidatesAtRoot(tool, toolDir(tool, systemRoot))
   EXECUTABLE_CANDIDATE_CACHE.set(cacheKey, uniqueCandidates)
   return uniqueCandidates
 }
 
-function resolveLocalExecutable(tool, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
-  validateProfileId(profileId)
-  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}\u0000${profileId}`
+function resolveLocalExecutable(tool, systemRoot = SYSTEM_ROOT, profile = DEFAULT_PROFILE) {
+  const cacheKey = `${path.resolve(systemRoot)}\u0000${tool.id}`
   const cached = RESOLVED_EXECUTABLE_CACHE.get(cacheKey)
   if (cached && fs.existsSync(cached)) return cached
   RESOLVED_EXECUTABLE_CACHE.delete(cacheKey)
-  const resolved = executableCandidates(tool, systemRoot, profileId).find((candidate) => fs.existsSync(candidate)) || null
+  const resolved = executableCandidates(tool, systemRoot).find((candidate) => fs.existsSync(candidate)) || null
   if (resolved) RESOLVED_EXECUTABLE_CACHE.set(cacheKey, resolved)
   return resolved
 }
@@ -178,10 +157,9 @@ function ensureProfileDirectories(root) {
   return root
 }
 
-function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
-  const root = toolDir(tool, systemRoot)
-  ensureProfileDirectories(root)
-
+function prepareProfileRuntimeDirectories(tool, profile = DEFAULT_PROFILE, systemRoot = SYSTEM_ROOT) {
+  const root = profileRuntimeDir(tool, profile, systemRoot)
+  fs.mkdirSync(root, { recursive: true })
   if (tool.installer && tool.installer.type === 'npm') {
     ensureJsonFile(path.join(root, 'package.json'), {
       name: `omnishell-${tool.id}`,
@@ -189,32 +167,17 @@ function prepareToolDirectories(tool, systemRoot = SYSTEM_ROOT) {
       private: true
     })
   }
-
   return root
 }
 
-function prepareProfileRuntimeDirectories(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
-  if (profileId === DEFAULT_PROFILE_ID) return prepareToolDirectories(tool, systemRoot)
-  const root = profileRuntimeDir(tool, profileId, systemRoot)
-  fs.mkdirSync(root, { recursive: true })
-  if (tool.installer && tool.installer.type === 'npm') {
-    ensureJsonFile(path.join(root, 'package.json'), {
-      name: `omnishell-${tool.id}-${profileId}`,
-      version: '1.0.0',
-      private: true
-    })
-  }
+function prepareProfileDirectories(tool, profile = DEFAULT_PROFILE, systemRoot = SYSTEM_ROOT) {
+  const root = ensureProfileDirectories(profileDir(tool, profile, systemRoot))
+  for (const name of ['workspace', 'logs']) fs.mkdirSync(path.join(root, name), { recursive: true })
   return root
-}
-
-function prepareProfileDirectories(tool, profileId = DEFAULT_PROFILE_ID, systemRoot = SYSTEM_ROOT) {
-  if (profileId === DEFAULT_PROFILE_ID) return prepareToolDirectories(tool, systemRoot)
-  return ensureProfileDirectories(profileDir(tool, profileId, systemRoot))
 }
 
 function prepareAllTools(systemRoot = SYSTEM_ROOT) {
   fs.mkdirSync(systemRoot, { recursive: true })
-  fs.mkdirSync(path.join(systemRoot, '_install'), { recursive: true })
 }
 
 const PASSTHROUGH_ENV_KEYS = new Set([
@@ -254,9 +217,9 @@ function copySafeBaseEnvironment(baseEnv) {
   return result
 }
 
-function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
-  const runtimeRoot = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
-  const root = prepareProfileDirectories(tool, profileId, systemRoot)
+function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profile = DEFAULT_PROFILE) {
+  const runtimeRoot = toolDir(tool, systemRoot)
+  const root = prepareProfileDirectories(tool, profile, systemRoot)
   const drive = path.parse(root).root.replace(/[\\/]$/, '')
   const configHome = path.join(root, '.config')
   const dataHome = path.join(root, '.local', 'share')
@@ -358,9 +321,9 @@ function createIsolatedEnvironment(tool, baseEnv = process.env, systemRoot = SYS
   return env
 }
 
-function createInstallEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID) {
-  const root = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
-  const env = createIsolatedEnvironment(tool, baseEnv, systemRoot, profileId)
+function createInstallEnvironment(tool, baseEnv = process.env, systemRoot = SYSTEM_ROOT, profile = DEFAULT_PROFILE) {
+  const root = prepareProfileRuntimeDirectories(tool, profile, systemRoot)
+  const env = createIsolatedEnvironment(tool, baseEnv, systemRoot, profile)
   const drive = path.parse(root).root.replace(/[\\/]$/, '')
   Object.assign(env, {
     HOME: root,
@@ -393,10 +356,10 @@ function externalScriptPath(appRoot, scriptName) {
     .replace(/([\\/])app\.asar([\\/])/i, '$1app.asar.unpacked$2')
 }
 
-function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT, profileId = DEFAULT_PROFILE_ID, version = 'latest') {
+function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoot = SYSTEM_ROOT, profile = DEFAULT_PROFILE, version = 'latest') {
   if (!tool || !tool.installer) return null
-  const root = prepareProfileRuntimeDirectories(tool, profileId, systemRoot)
-  const workingDirectory = path.join(systemRoot, '_install', tool.id, profileId)
+  const root = prepareProfileRuntimeDirectories(tool, profile, systemRoot)
+  const workingDirectory = path.join(root, 'install-temp')
   const installer = tool.installer
 
   if (installer.type === 'npm') {
@@ -473,12 +436,22 @@ function createInstallPlan(tool, appRoot = path.join(__dirname, '..'), systemRoo
   return null
 }
 
+async function cleanupInstallArtifacts(tool, systemRoot = SYSTEM_ROOT) {
+  const root = toolDir(tool, systemRoot)
+  for (const relative of ['install-temp', 'Temp', '.cache/npm', '.cache/uv']) {
+    await fs.promises.rm(path.join(root, relative), { recursive: true, force: true })
+  }
+}
+
 module.exports = {
+  DEFAULT_PROFILE,
   SYSTEM_ROOT,
   TOOLS,
   TOOL_BY_ID,
   createInstallEnvironment,
   createInstallPlan,
+  cleanupInstallArtifacts,
+  executableCandidatesAtRoot,
   createIsolatedEnvironment,
   executableCandidates,
   externalScriptPath,
@@ -486,7 +459,6 @@ module.exports = {
   prepareAllTools,
   prepareProfileDirectories,
   prepareProfileRuntimeDirectories,
-  prepareToolDirectories,
   profileDir,
   profileRuntimeDir,
   resolveLocalExecutable,

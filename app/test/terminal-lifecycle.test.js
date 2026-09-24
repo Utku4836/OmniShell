@@ -28,9 +28,9 @@ async function harness(t, options = {}) {
   })
   const spawned = []
   const pty = {
-    spawn() {
+    spawn(command, args, options) {
       const proc = {
-        pid: spawned.length + 100, onData() {}, onExit(callback) { this.exit = callback },
+        pid: spawned.length + 100, command, args, options, onData() {}, onExit(callback) { this.exit = callback },
         write(data) { if (data === '\x03' && !this.stopped) { this.stopped = true; setImmediate(() => this.exit({ exitCode: 0 })) } }, resize() {}, kill() { setImmediate(() => this.exit({ exitCode: 0 })) }
       }
       spawned.push(proc)
@@ -43,8 +43,10 @@ async function harness(t, options = {}) {
   const store = new ProfileStore(root)
   await store.list('codex')
   const tool = tooling.findTool('codex')
-  const install = async (profileId = 'default') => {
-    const executable = tooling.executableCandidates(tool, root, profileId)[0]
+  const install = async (profileId = 'default', toolId = 'codex') => {
+    const selectedTool = tooling.findTool(toolId)
+    const profile = await new ProfileStore(root).get(toolId, profileId)
+    const executable = tooling.executableCandidates(selectedTool, root, profile)[0]
     await fs.mkdir(path.dirname(executable), { recursive: true })
     await fs.writeFile(executable, '')
   }
@@ -56,7 +58,7 @@ async function harness(t, options = {}) {
       if (name === './lib/console-window-guard') return { ConsoleWindowGuard: class { async ready() {} watch() {} unwatch() {} stop() {} } }
       if (name === './lib/tooling') return {
         ...tooling, SYSTEM_ROOT: root,
-        prepareProfileDirectories: (tool, id) => tooling.prepareProfileDirectories(tool, id, root)
+        prepareProfileDirectories: (tool, profile) => tooling.prepareProfileDirectories(tool, profile, root)
       }
       if (name === './lib/profile-sharing') return {
         ...localRequire(name),
@@ -70,7 +72,7 @@ async function harness(t, options = {}) {
   }, { filename: sourcePath })
   const event = (id = 1) => ({ sender: { id, isDestroyed: () => false } })
   return {
-    root, spawned, app, install, event, quitCount: () => quitCount,
+    root, spawned, app, install, installToolId: (toolId) => install('default', toolId), event, quitCount: () => quitCount,
     invoke: (name, senderId, ...args) => handlers.get(name)(event(senderId), ...args),
     async create(name, settings) {
       const result = await handlers.get('profiles:create')(event(), 'codex', name, settings)
@@ -80,6 +82,26 @@ async function harness(t, options = {}) {
     }
   }
 }
+
+test('all twelve CLIs launch in isolated profile environments with one shared executable per tool', async (t) => {
+  const h = await harness(t)
+  for (const tool of tooling.TOOLS) {
+    await h.installToolId(tool.id)
+    const result = await h.invoke('terminal:start', 1, tool.id, 'default')
+    assert.equal(result.ok, true, `${tool.name}: ${result.error || ''}`)
+    const launched = h.spawned.at(-1)
+    const profile = await new ProfileStore(h.root).get(tool.id)
+    const profileRoot = tooling.profileDir(tool, profile, h.root)
+    const executable = tooling.resolveLocalExecutable(tool, h.root, profile)
+    assert.equal(launched.options.cwd, path.join(profileRoot, 'workspace'), tool.id)
+    assert.equal(launched.options.env.HOME, profileRoot, tool.id)
+    assert.equal(launched.options.env.USERPROFILE, profileRoot, tool.id)
+    assert.equal(launched.options.env.TEMP, path.join(profileRoot, 'Temp'), tool.id)
+    assert.ok(launched.command === executable || launched.args.includes(executable), tool.id)
+    await h.invoke('terminal:stop', 1)
+  }
+  assert.equal(h.spawned.length, tooling.TOOLS.length)
+})
 
 test('stopping while hydration is pending prevents a late PTY from spawning', async (t) => {
   const entered = deferred()
@@ -171,6 +193,43 @@ test('settings and deletion are rejected while a profile is starting', async (t)
   release.resolve()
   assert.equal((await start).ok, true)
   await h.invoke('terminal:stop', 1)
+})
+
+test('renaming moves the complete profile folder and deletion moves it to trash', async (t) => {
+  const h = await harness(t)
+  const tool = tooling.findTool('codex')
+  const profile = await h.create('Work', {})
+  const original = tooling.profileDir(tool, profile, h.root)
+  await fs.mkdir(path.join(original, 'workspace'), { recursive: true })
+  await fs.mkdir(path.join(original, 'logs'), { recursive: true })
+  await fs.writeFile(path.join(original, 'workspace', 'notes.txt'), 'my work')
+  await fs.writeFile(path.join(original, 'logs', 'install.log'), 'log')
+
+  const renamed = await h.invoke('profiles:rename', 1, 'codex', profile.id, 'Personal')
+  assert.equal(renamed.ok, true, renamed.error)
+  let destination = tooling.profileDir(tool, renamed.profile, h.root)
+  await assert.rejects(fs.access(original), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(path.join(destination, 'workspace', 'notes.txt'), 'utf8'), 'my work')
+  assert.equal(await fs.readFile(path.join(destination, 'logs', 'install.log'), 'utf8'), 'log')
+  assert.equal((await h.invoke('tool:check', 1, 'codex', profile.id)).installed, true)
+  assert.equal((await h.invoke('profiles:create', 1, 'codex', 'PERSONAL')).ok, false)
+  assert.equal((await h.invoke('profiles:create', 1, 'codex', 'CON')).ok, false)
+
+  const caseChange = await h.invoke('profiles:rename', 1, 'codex', profile.id, 'personal')
+  assert.equal(caseChange.ok, true, caseChange.error)
+  destination = tooling.profileDir(tool, caseChange.profile, h.root)
+  assert.equal(await fs.readFile(path.join(destination, 'workspace', 'notes.txt'), 'utf8'), 'my work')
+
+  assert.equal((await h.invoke('terminal:start', 1, 'codex', profile.id)).ok, true)
+  assert.equal(h.spawned.at(-1).options.cwd, path.join(destination, 'workspace'))
+  assert.equal(h.spawned.at(-1).options.env.HOME, destination)
+  assert.equal(h.spawned.at(-1).options.env.GIT_CEILING_DIRECTORIES, path.join(destination, 'workspace'))
+  assert.equal((await h.invoke('profiles:rename', 1, 'codex', profile.id, 'Busy')).ok, false)
+  await h.invoke('terminal:stop', 1)
+  const removed = await h.invoke('profiles:delete', 1, 'codex', profile.id)
+  assert.equal(removed.ok, true, removed.error)
+  assert.equal(await fs.readFile(path.join(removed.recoverablePath, 'workspace', 'notes.txt'), 'utf8'), 'my work')
+  await assert.rejects(fs.access(destination), { code: 'ENOENT' })
 })
 
 test('invalid profile identifiers return a structured terminal failure', async (t) => {

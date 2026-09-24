@@ -20,7 +20,14 @@ try {
     }
     Invoke-OmniTrackedDownload -Uri $manifest.url -Destination $download -StartPercent 12 -EndPercent 85
     Write-OmniProgress -Percent 88 -Message 'Checking Antigravity download integrity'
-    $hash = (Get-FileHash -LiteralPath $download -Algorithm SHA512).Hash
+    $hasher = [System.Security.Cryptography.SHA512]::Create()
+    $stream = [System.IO.File]::OpenRead($download)
+    try {
+        $hash = [System.BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')
+    } finally {
+        $stream.Dispose()
+        $hasher.Dispose()
+    }
     if ($hash -ne $manifest.sha512) { throw 'Antigravity download checksum mismatch.' }
     # Keep the old executable in place until the new download is complete and verified.
     Copy-Item -LiteralPath $download -Destination $replacement -Force

@@ -23,11 +23,11 @@ function parseInstallProgressLine(value) {
   }
 }
 
-function createInstallReporter(tool, systemRoot, now = new Date()) {
-  const logDirectory = path.join(systemRoot, '_install', 'logs')
+function createInstallReporter(tool, profileRoot, now = new Date()) {
+  const logDirectory = path.join(profileRoot, 'logs')
   fs.mkdirSync(logDirectory, { recursive: true })
   const timestamp = now.toISOString().replace(/[:.]/g, '-')
-  const logPath = path.join(logDirectory, `${tool.id}-${timestamp}.log`)
+  const logPath = path.join(logDirectory, `install-${timestamp}.log`)
   fs.writeFileSync(logPath, `OmniShell installer log\nTool: ${tool.name} (${tool.id})\nStarted: ${now.toISOString()}\n\n`, 'utf8')
 
   let pendingLog = ''
@@ -120,25 +120,11 @@ function createInstallReporter(tool, systemRoot, now = new Date()) {
   return reporter
 }
 
-function findLatestInstallLogs(systemRoot) {
-  const logDirectory = path.join(systemRoot, '_install', 'logs')
-  const latest = new Map()
-  if (!fs.existsSync(logDirectory)) return latest
-  for (const entry of fs.readdirSync(logDirectory, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.log')) continue
-    const match = /^(.+)-(\d{4}-\d{2}-\d{2}T.+)\.log$/.exec(entry.name)
-    if (!match) continue
-    const toolId = match[1]
-    const current = latest.get(toolId)
-    if (!current || entry.name.localeCompare(path.basename(current)) > 0) {
-      latest.set(toolId, path.join(logDirectory, entry.name))
-    }
-  }
-  return latest
-}
-
-function findLatestInstallLog(toolId, systemRoot) {
-  return findLatestInstallLogs(systemRoot).get(toolId) || null
+function findLatestInstallLog(profileRoot) {
+  const logDirectory = path.join(profileRoot, 'logs')
+  if (!fs.existsSync(logDirectory)) return null
+  const files = fs.readdirSync(logDirectory).filter((name) => name.startsWith('install-') && name.endsWith('.log')).sort()
+  return files.length ? path.join(logDirectory, files.at(-1)) : null
 }
 
 function terminateProcessTree(proc, platform = process.platform, spawnProcess = spawn) {
@@ -181,7 +167,6 @@ module.exports = {
   cleanInstallLine,
   createInstallReporter,
   findLatestInstallLog,
-  findLatestInstallLogs,
   parseInstallProgressLine,
   terminateProcessTree,
   stopPtyGracefully

@@ -3,13 +3,17 @@ const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 
 const SCHEMA_VERSION = 2
+const PROFILE_LAYOUT_VERSION = 2
+const SHARED_INSTALL_VERSION = 1
 const DEFAULT_PROFILE_ID = 'default'
 const PROFILE_ID_PATTERN = /^p_[0-9a-f]{32}$/
 const DEFAULT_PROFILE_SETTINGS = Object.freeze({
   fullPermission: false,
   sharedSessions: false,
   sharedModels: false,
-  sharedConfig: false
+  sharedConfig: false,
+  sharedSkills: false,
+  sharedMcp: false
 })
 
 function normalizeProfileSettings(value = {}) {
@@ -22,8 +26,9 @@ function cloneProfile(profile) {
 
 function normalizeProfileName(value) {
   const name = String(value || '').trim().replace(/\s+/g, ' ')
-  if (!name || name.length > 40 || /[\u0000-\u001f\u007f]/.test(name)) {
-    throw new Error('Profile name must contain 1-40 visible characters')
+  if (!name || name.length > 40 || /[\u0000-\u001f\u007f<>:"/\\|?*]/.test(name)
+    || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\..*)?$/i.test(name)) {
+    throw new Error('Profile name must be 1-40 characters and a valid Windows folder name')
   }
   return name
 }
@@ -49,7 +54,7 @@ class ProfileStore {
     this.filePath = path.join(this.directory, 'profiles.json')
     this.now = options.now || (() => new Date().toISOString())
     this.uuid = options.uuid || randomUUID
-    this.state = { schemaVersion: SCHEMA_VERSION, tools: {} }
+    this.state = { schemaVersion: SCHEMA_VERSION, layoutVersion: PROFILE_LAYOUT_VERSION, sharedInstallVersion: SHARED_INSTALL_VERSION, tools: {} }
     this.loadPromise = null
     this.writeQueue = Promise.resolve()
   }
@@ -68,6 +73,8 @@ class ProfileStore {
       }
       this.state = {
         schemaVersion: SCHEMA_VERSION,
+        layoutVersion: parsed.layoutVersion === PROFILE_LAYOUT_VERSION ? PROFILE_LAYOUT_VERSION : 1,
+        sharedInstallVersion: parsed.sharedInstallVersion === SHARED_INSTALL_VERSION ? SHARED_INSTALL_VERSION : 0,
         tools: Object.fromEntries(Object.entries(parsed.tools).map(([toolId, profiles]) => [
           toolId,
           Array.isArray(profiles) ? profiles.map((profile) => ({ ...profile, settings: normalizeProfileSettings(profile.settings) })) : []
@@ -79,7 +86,7 @@ class ProfileStore {
       await fsp.mkdir(this.directory, { recursive: true })
       const backupPath = path.join(this.directory, `profiles.corrupt-${Date.now()}.json`)
       await fsp.rename(this.filePath, backupPath)
-      this.state = { schemaVersion: SCHEMA_VERSION, tools: {} }
+      this.state = { schemaVersion: SCHEMA_VERSION, layoutVersion: PROFILE_LAYOUT_VERSION, sharedInstallVersion: SHARED_INSTALL_VERSION, tools: {} }
     }
   }
 
@@ -218,12 +225,24 @@ class ProfileStore {
       return cloneProfile(profile)
     })
   }
+
+  async markLayoutCurrent() {
+    if (this.state.layoutVersion === PROFILE_LAYOUT_VERSION) return
+    await this.#mutate(() => { this.state.layoutVersion = PROFILE_LAYOUT_VERSION })
+  }
+
+  async markSharedInstallCurrent() {
+    if (this.state.sharedInstallVersion === SHARED_INSTALL_VERSION) return
+    await this.#mutate(() => { this.state.sharedInstallVersion = SHARED_INSTALL_VERSION })
+  }
 }
 
 module.exports = {
   DEFAULT_PROFILE_ID,
   DEFAULT_PROFILE_SETTINGS,
   PROFILE_ID_PATTERN,
+  PROFILE_LAYOUT_VERSION,
+  SHARED_INSTALL_VERSION,
   ProfileStore,
   normalizeProfileName,
   normalizeProfileSettings,

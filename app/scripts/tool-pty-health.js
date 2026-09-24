@@ -1,10 +1,12 @@
 const pty = require('node-pty')
 const {
   TOOLS,
+  SYSTEM_ROOT,
   createIsolatedEnvironment,
+  profileDir,
   resolveLocalExecutable,
-  toolDir
 } = require('../lib/tooling')
+const { ProfileStore } = require('../lib/profile-store')
 const { terminateProcessTree } = require('../lib/install-runtime')
 
 function clean(value) {
@@ -16,9 +18,9 @@ function clean(value) {
     .trim()
 }
 
-function checkTool(tool) {
+function checkTool(tool, profile) {
   return new Promise((resolve) => {
-    const executable = resolveLocalExecutable(tool)
+    const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profile)
     if (!executable) {
       resolve({ tool, ok: false, output: 'local executable missing' })
       return
@@ -35,8 +37,8 @@ function checkTool(tool) {
       name: 'xterm-256color',
       cols: 100,
       rows: 30,
-      cwd: toolDir(tool),
-      env: createIsolatedEnvironment(tool)
+      cwd: profileDir(tool, profile, SYSTEM_ROOT),
+      env: createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile)
     })
 
     const timer = setTimeout(() => {
@@ -64,8 +66,10 @@ function checkTool(tool) {
 
 ;(async () => {
   let failed = 0
+  const store = new ProfileStore(SYSTEM_ROOT)
   for (const tool of TOOLS) {
-    const result = await checkTool(tool)
+    const profile = await store.get(tool.id)
+    const result = await checkTool(tool, profile)
     if (!result.ok) failed += 1
     process.stdout.write(`${result.ok ? 'PASS' : 'FAIL'}\t${tool.name}\t${result.output}\n`)
   }

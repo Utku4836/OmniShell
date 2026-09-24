@@ -1,0 +1,67 @@
+const assert = require('node:assert/strict')
+const { test } = require('node:test')
+const fs = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
+const toml = require('@iarna/toml')
+const { ProfileStore } = require('../lib/profile-store')
+const { migrateProfileDocuments, profileDocumentName, writeProfileDocument } = require('../lib/profile-document')
+const { findTool, profileDir } = require('../lib/tooling')
+
+async function temporaryRoot(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'omnishell-doc-test-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  return root
+}
+
+test('profile TOML replaces legacy JSON and keeps one document in each named CLI profile', async (t) => {
+  const root = await temporaryRoot(t)
+  const store = new ProfileStore(root)
+  const codex = findTool('codex')
+  const claude = findTool('claude')
+  const work = await store.create('codex', 'İş', { sharedMcp: true })
+  const defaultProfile = await store.get('codex')
+  const claudeDefault = await store.get('claude')
+  for (const [tool, profile] of [[codex, work], [codex, defaultProfile], [claude, claudeDefault]]) {
+    const directory = profileDir(tool, profile, root)
+    await fs.mkdir(directory, { recursive: true })
+    await fs.writeFile(path.join(directory, 'profile.json'), JSON.stringify(profile))
+  }
+  await migrateProfileDocuments(store, [codex, claude], root)
+  const file = path.join(profileDir(codex, work, root), profileDocumentName(codex, work))
+  const document = toml.parse(await fs.readFile(file, 'utf8'))
+  assert.equal(path.basename(file), 'İş-Codex.Toml')
+  assert.equal(document.profile.id, work.id)
+  assert.equal(document.settings.shared_mcp, true)
+  assert.equal(document.settings.shared_skills, false)
+  assert.deepEqual(await fs.readdir(profileDir(codex, work, root)), ['İş-Codex.Toml'])
+  assert.equal(profileDocumentName(claude, claudeDefault), 'Default-Claude Code.Toml')
+  await migrateProfileDocuments(new ProfileStore(root), [codex, claude], root)
+  assert.deepEqual(await fs.readdir(profileDir(codex, work, root)), ['İş-Codex.Toml'])
+})
+
+test('TOML setting edits load into the profile index, but a foreign profile id is rejected', async (t) => {
+  const root = await temporaryRoot(t)
+  const store = new ProfileStore(root)
+  const tool = findTool('codex')
+  const profile = await store.get('codex')
+  await writeProfileDocument(tool, profile, root)
+  const file = path.join(profileDir(tool, profile, root), profileDocumentName(tool, profile))
+  await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('shared_skills = false', 'shared_skills = true'))
+  await migrateProfileDocuments(new ProfileStore(root), [tool], root)
+  assert.equal((await new ProfileStore(root).get('codex')).settings.sharedSkills, true)
+  await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('id = "default"', 'id = "another"'))
+  await assert.rejects(migrateProfileDocuments(new ProfileStore(root), [tool], root), /another profile/)
+})
+
+test('an interrupted TOML filename conversion resumes without losing the current document', async (t) => {
+  const root = await temporaryRoot(t)
+  const store = new ProfileStore(root)
+  const tool = findTool('claude')
+  const profile = await store.get('claude')
+  const current = await writeProfileDocument(tool, profile, root)
+  const old = path.join(path.dirname(current), 'Default-ClaudeCode.Toml')
+  await fs.copyFile(current, old)
+  await migrateProfileDocuments(new ProfileStore(root), [tool], root)
+  assert.deepEqual(await fs.readdir(path.dirname(current)), ['Default-Claude Code.Toml'])
+})

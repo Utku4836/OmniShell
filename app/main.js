@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, clipboard, globalShortcut, ipcMain, net, screen, shell, webContents } = require('electron')
+const { app, BrowserWindow, Menu, Tray, clipboard, dialog, globalShortcut, ipcMain, net, screen, shell, webContents } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
@@ -11,22 +11,25 @@ if (app.isPackaged && !process.env.OMNISHELL_SYSTEM_ROOT) {
 const {
   SYSTEM_ROOT,
   TOOLS,
+  cleanupInstallArtifacts,
   createInstallEnvironment,
   createInstallPlan,
   createIsolatedEnvironment,
   findTool,
   prepareAllTools,
   prepareProfileDirectories,
-  prepareToolDirectories,
   profileDir,
-  resolveLocalExecutable,
-  toolDir
+  resolveLocalExecutable
 } = require('./lib/tooling')
-const { DEFAULT_PROFILE_ID, ProfileStore, normalizeProfileSettings, validateProfileId } = require('./lib/profile-store')
+const { DEFAULT_PROFILE_ID, ProfileStore, normalizeProfileName, normalizeProfileSettings, validateProfileId } = require('./lib/profile-store')
 const { PtyRegistry } = require('./lib/pty-registry')
 const { collectTerminalResponses } = require('./lib/terminal-queries')
-const { createInstallReporter, findLatestInstallLogs, terminateProcessTree, stopPtyGracefully } = require('./lib/install-runtime')
-const { hydrateSharedProfileData, persistSharedProfileData, sharingCapabilities } = require('./lib/profile-sharing')
+const { createInstallReporter, findLatestInstallLog, terminateProcessTree, stopPtyGracefully } = require('./lib/install-runtime')
+const { clearPendingRename, migrateProfileLayout, recordPendingRename, recoverPendingRenames } = require('./lib/profile-layout')
+const { migrateProfileDocuments, profileDocumentName, writeProfileDocumentSync } = require('./lib/profile-document')
+const { migrateSharedInstallations } = require('./lib/shared-install-layout')
+const { hydrateSharedProfileData, migrateLegacySharedMcp, persistSharedProfileData, sharingCapabilities } = require('./lib/profile-sharing')
+const { applyProfilePathUpdates, planProfilePathUpdates, restoreProfilePathUpdates } = require('./lib/profile-path-references')
 const { prepareProfileLaunch, finalizeProfileLaunch } = require('./lib/profile-launch')
 const { animateWindow, clearWindowAnimation } = require('./lib/window-transitions')
 const { ConsoleWindowGuard } = require('./lib/console-window-guard')
@@ -47,23 +50,25 @@ const terminalLaunches = new Map()
 const closingProfiles = new Map()
 const pendingProfileWrites = new Set()
 const editingProfiles = new Set()
+const renamingTools = new Set()
 
 let tray = null
 let installHistoryLoaded = false
 const releaseResolver = new ReleaseResolver(net?.fetch ? net.fetch.bind(net) : undefined)
 const autoUpdater = new AutoUpdater({
   tools: TOOLS, systemRoot: SYSTEM_ROOT, listProfiles: (id) => profileStore.list(id), resolver: releaseResolver,
-  readVersion: (tool, _root, id) => readProfileVersion(tool, id),
-  isBusy: (toolId, profileId) => quitting || installJobs.size > 0 || profileHasActiveSession(toolId, profileId),
+  readVersion: (tool, _root, profile) => readProfileVersion(tool, profile),
+  isBusy: (toolId) => quitting || installJobs.has(toolId) || toolHasActiveSession(toolId),
   install: async (toolId, profileId, release) => {
     const result = await installTool(-1, toolId, profileId, release)
     if (!result.ok) return result
-    return installJobs.get(profileInstallKey(toolId, profileId))?.completion || result
+    return installJobs.get(toolId)?.completion || result
   }
 })
 
 let quitting = false
 let quitReady = false
+let startupReady = false
 
 app.setName('OmniShell')
 app.setAppUserModelId('OmniShell')
@@ -98,14 +103,8 @@ function profileInstallKey(toolId, profileId = DEFAULT_PROFILE_ID) {
   return `${toolId}\u0000${profileId}`
 }
 
-function installLogId(toolId, profileId = DEFAULT_PROFILE_ID) {
-  validateProfileId(profileId)
-  return `${toolId}--${profileId}`
-}
-
-function profileWorkspaceDir(tool, profileId = DEFAULT_PROFILE_ID) {
-  validateProfileId(profileId)
-  const root = path.join(app.getPath('userData'), 'workspaces', tool.id, profileId)
+function profileWorkspaceDir(tool, profile) {
+  const root = path.join(profileDir(tool, profile, SYSTEM_ROOT), 'workspace')
   fs.mkdirSync(root, { recursive: true })
   return root
 }
@@ -113,30 +112,39 @@ function profileWorkspaceDir(tool, profileId = DEFAULT_PROFILE_ID) {
 function profilesWithInstallState(tool, profiles) {
   return profiles.map((profile) => ({
     ...profile,
-    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)),
-    installing: installJobs.has(profileInstallKey(tool.id, profile.id)),
-    installPercent: installJobs.get(profileInstallKey(tool.id, profile.id))?.percent || 0,
-    installLine: installJobs.get(profileInstallKey(tool.id, profile.id))?.lastLine || ''
+    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile)),
+    installing: installJobs.has(tool.id),
+    installPercent: installJobs.get(tool.id)?.percent || 0,
+    installLine: installJobs.get(tool.id)?.lastLine || ''
   }))
 }
 
 function profileHasActiveSession(toolId, profileId) {
-  return ptyRegistry.entries().some(([, session]) => session.toolId === toolId && session.profileId === profileId)
+  return renamingTools.has(toolId)
+    || ptyRegistry.entries().some(([, session]) => session.toolId === toolId && session.profileId === profileId)
     || [...terminalLaunches.values()].some((launch) => launch.toolId === toolId && launch.profileId === profileId)
     || closingProfiles.has(profileInstallKey(toolId, profileId))
     || editingProfiles.has(profileInstallKey(toolId, profileId))
 }
 
+function toolHasActiveSession(toolId) {
+  return renamingTools.has(toolId)
+    || ptyRegistry.entries().some(([, session]) => session.toolId === toolId)
+    || [...terminalLaunches.values()].some((launch) => launch.toolId === toolId)
+    || [...closingProfiles.keys()].some((key) => key.startsWith(`${toolId}\u0000`))
+    || [...editingProfiles].some((key) => key.startsWith(`${toolId}\u0000`))
+}
+
 function profilesConflict(left, right) {
   if (left.id === right.id) return true
-  return ['sharedSessions', 'sharedModels', 'sharedConfig'].some((key) => left.settings?.[key] && right.settings?.[key])
+  return ['sharedSessions', 'sharedModels', 'sharedConfig', 'sharedSkills', 'sharedMcp'].some((key) => left.settings?.[key] && right.settings?.[key])
 }
 
 function persistSessionProfile(session) {
   if (!session) return Promise.resolve()
   if (session.persistPromise) return session.persistPromise
   session.persistPromise = (async () => {
-    await finalizeProfileLaunch(session.tool, profileDir(session.tool, session.profileId, SYSTEM_ROOT))
+    await finalizeProfileLaunch(session.tool, profileDir(session.tool, session.profile, SYSTEM_ROOT))
     await persistSharedProfileData(session.tool, session.profile, SYSTEM_ROOT)
   })()
   pendingProfileWrites.add(session.persistPromise)
@@ -162,30 +170,38 @@ function finishSessionProfile(session) {
 }
 
 function writeProfileDescriptor(tool, profile) {
-  if (!profile || profile.id === DEFAULT_PROFILE_ID) return
-  const root = prepareProfileDirectories(tool, profile.id)
-  fs.writeFileSync(path.join(root, 'profile.json'), JSON.stringify({
-    id: profile.id,
-    name: profile.name,
-    settings: profile.settings,
-    updatedAt: profile.updatedAt,
-    data: '.',
-    runtime: 'runtime'
-  }, null, 2), 'utf8')
+  if (!profile) return
+  prepareProfileDirectories(tool, profile)
+  writeProfileDocumentSync(tool, profile, SYSTEM_ROOT)
 }
 
 function broadcastInstall(job, channel, payload) {
   for (const senderId of job.subscribers) safeSend(senderId, channel, payload)
 }
 
-function loadInstallHistory() {
+async function loadInstallHistory() {
   if (installHistoryLoaded) return
-  installHistoryLoaded = true
-  for (const [logId, logPath] of findLatestInstallLogs(SYSTEM_ROOT)) {
-    const match = /^(.*)--(default|p_[0-9a-f]{32})$/.exec(logId)
-    if (match) installHistory.set(profileInstallKey(match[1], match[2]), logPath)
-    else installHistory.set(profileInstallKey(logId), logPath)
+  const profilesByTool = await profileStore.ensureTools(TOOLS.map((tool) => tool.id))
+  for (const tool of TOOLS) {
+    for (const profile of profilesByTool[tool.id] || []) {
+      const log = findLatestInstallLog(profileDir(tool, profile, SYSTEM_ROOT))
+      if (log) installHistory.set(profileInstallKey(tool.id, profile.id), log)
+    }
   }
+  installHistoryLoaded = true
+}
+
+function latestInstallLogForTool(toolId) {
+  let latest = null
+  let timestamp = -1
+  for (const [key, file] of installHistory) {
+    if (!key.startsWith(`${toolId}\u0000`)) continue
+    try {
+      const mtime = fs.statSync(file).mtimeMs
+      if (mtime > timestamp) { latest = file; timestamp = mtime }
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+  }
+  return latest
 }
 
 function flushInstallProgress(job) {
@@ -389,11 +405,12 @@ function createTray() {
   })
 }
 
-ipcMain.handle('tools:list', (event) => {
-  loadInstallHistory()
+ipcMain.handle('tools:list', async (event) => {
+  await loadInstallHistory()
+  const profilesByTool = await profileStore.ensureTools(TOOLS.map((tool) => tool.id))
   for (const job of installJobs.values()) job.subscribers.add(event.sender.id)
   return TOOLS.map((tool) => {
-    const job = installJobs.get(profileInstallKey(tool.id))
+    const job = installJobs.get(tool.id)
     return {
     id: tool.id,
     name: tool.name,
@@ -405,12 +422,12 @@ ipcMain.handle('tools:list', (event) => {
     installable: Boolean(tool.installer),
     hint: tool.hint || '',
     notice: tool.notice || '',
-    installed: Boolean(resolveLocalExecutable(tool)),
+    installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profilesByTool[tool.id][0])),
     installing: Boolean(job),
     installPercent: job?.percent || 0,
-    hasLog: Boolean(installHistory.get(profileInstallKey(tool.id))),
+    hasLog: Boolean(latestInstallLogForTool(tool.id)),
     source: tool.installer?.package || tool.installer?.url || tool.installer?.repo || 'manual setup',
-    profile: toolDir(tool)
+    profile: profileDir(tool, profilesByTool[tool.id][0], SYSTEM_ROOT)
   }})
 })
 
@@ -434,8 +451,8 @@ ipcMain.handle('window:open-tool', async (event, toolId, profileId = null) => {
       const win = content && BrowserWindow.fromWebContents(content)
       if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); return { ok: true, reused: true } }
     }
-    if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) {
-      return { ok: false, error: 'This profile does not have its own CLI installation yet' }
+    if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile)) {
+      return { ok: false, error: 'This CLI has not been installed yet' }
     }
   }
   createWindow({ toolId: tool.id, profileId, auxiliary: profileId !== null })
@@ -452,12 +469,23 @@ ipcMain.handle('profiles:list', async (event, toolId) => {
 ipcMain.handle('profiles:create', async (event, toolId, name, settings = {}) => {
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found' }
+  if (renamingTools.has(tool.id)) return { ok: false, error: 'Wait for this CLI profile rename to finish' }
+  let profile
   try {
-    const profile = await profileStore.create(tool.id, name, settings)
-    prepareProfileDirectories(tool, profile.id)
+    const normalizedName = normalizeProfileName(name)
+    const proposed = profileDir(tool, { id: DEFAULT_PROFILE_ID, name: normalizedName }, SYSTEM_ROOT)
+    if (fs.existsSync(proposed)) throw new Error('A profile folder with this name already exists')
+    profile = await profileStore.create(tool.id, normalizedName, settings)
+    prepareProfileDirectories(tool, profile)
     writeProfileDescriptor(tool, profile)
-    return { ok: true, profile: { ...profile, installed: false } }
+    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT)) } }
   } catch (error) {
+    if (profile) {
+      try {
+        await profileStore.delete(tool.id, profile.id)
+        await fs.promises.rm(profileDir(tool, profile, SYSTEM_ROOT), { recursive: true, force: true })
+      } catch (rollbackError) {}
+    }
     return { ok: false, error: String(error.message || error) }
   }
 })
@@ -465,12 +493,86 @@ ipcMain.handle('profiles:create', async (event, toolId, name, settings = {}) => 
 ipcMain.handle('profiles:rename', async (event, toolId, profileId, name) => {
   const tool = findTool(toolId)
   if (!tool) return { ok: false, error: 'Tool not found' }
+  if (toolHasActiveSession(tool.id) || installJobs.has(tool.id)) {
+    return { ok: false, error: 'Close this CLI’s sessions and finish its installation before renaming a profile' }
+  }
+  renamingTools.add(tool.id)
+  const key = profileInstallKey(tool.id, profileId)
+  editingProfiles.add(key)
+  let previous
+  let moved = false
+  let journaled = false
+  let previousLog
+  let source
+  let destination
+  let newDocumentName
+  let pathUpdates
   try {
-    const profile = await profileStore.rename(tool.id, profileId, name)
+    previous = await profileStore.get(tool.id, profileId)
+    if (!previous) return { ok: false, error: 'Profile not found' }
+    const normalizedName = normalizeProfileName(name)
+    newDocumentName = profileDocumentName(tool, { ...previous, name: normalizedName })
+    source = profileDir(tool, previous, SYSTEM_ROOT)
+    destination = profileDir(tool, { ...previous, name: normalizedName }, SYSTEM_ROOT)
+    pathUpdates = await planProfilePathUpdates(tool, previous, normalizedName, await profileStore.list(tool.id), SYSTEM_ROOT)
+    if (source !== destination) {
+      const exists = fs.existsSync(destination)
+      if (exists && source.toLowerCase() !== destination.toLowerCase()) throw new Error('A profile folder with this name already exists')
+      await recordPendingRename(SYSTEM_ROOT, tool, previous, normalizedName)
+      journaled = true
+      if (source.toLowerCase() === destination.toLowerCase()) {
+        const temporary = path.join(path.dirname(source), `.renaming-${profileId}`)
+        if (fs.existsSync(temporary)) throw new Error('An unfinished profile rename needs recovery')
+        await fs.promises.rename(source, temporary)
+        try { await fs.promises.rename(temporary, destination) } catch (error) {
+          await fs.promises.rename(temporary, source)
+          throw error
+        }
+      } else await fs.promises.rename(source, destination)
+      moved = true
+    }
+    const profile = await profileStore.rename(tool.id, profileId, normalizedName)
+    await applyProfilePathUpdates(pathUpdates)
+    if (previous.name !== profile.name) {
+      await fs.promises.rm(path.join(destination, profileDocumentName(tool, previous)), { force: true })
+    }
     writeProfileDescriptor(tool, profile)
-    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) } }
+    previousLog = installHistory.get(key)
+    if (previousLog) installHistory.set(key, path.join(destination, 'logs', path.basename(previousLog)))
+    if (journaled) await clearPendingRename(SYSTEM_ROOT, tool, profileId)
+    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile)) } }
   } catch (error) {
-    return { ok: false, error: String(error.message || error) }
+    if (pathUpdates?.applied.length) {
+      try { await restoreProfilePathUpdates(pathUpdates) } catch (rollbackError) {
+        return { ok: false, error: `Profile rename could not be rolled back safely. Restart OmniShell to recover it: ${String(rollbackError.message || rollbackError)}` }
+      }
+    }
+    if (previousLog) installHistory.set(key, previousLog)
+    if (moved && fs.existsSync(destination) && !fs.existsSync(source)) {
+      try { await fs.promises.rename(destination, source) } catch (rollbackError) {}
+    }
+    if (previous && (await profileStore.get(tool.id, profileId))?.name !== previous.name) {
+      try { await profileStore.rename(tool.id, profileId, previous.name) } catch (rollbackError) {}
+    }
+    if (previous && source && fs.existsSync(source) && (await profileStore.get(tool.id, profileId))?.name === previous.name) {
+      try {
+        writeProfileDescriptor(tool, previous)
+        if (newDocumentName && newDocumentName !== profileDocumentName(tool, previous)) {
+          await fs.promises.rm(path.join(source, newDocumentName), { force: true })
+        }
+      } catch (rollbackError) {}
+    }
+    if (journaled && fs.existsSync(source) && !fs.existsSync(path.join(path.dirname(source), `.renaming-${profileId}`))
+      && (await profileStore.get(tool.id, profileId))?.name === previous.name) {
+      try { await clearPendingRename(SYSTEM_ROOT, tool, profileId) } catch (rollbackError) {}
+    }
+    const restored = !previous || ((await profileStore.get(tool.id, profileId))?.name === previous.name && (!moved || fs.existsSync(source)))
+    return { ok: false, error: restored
+      ? `This profile name could not be used. The previous name was restored: ${String(error.message || error)}`
+      : `Profile rename could not be rolled back safely. Restart OmniShell to recover it: ${String(error.message || error)}` }
+  } finally {
+    editingProfiles.delete(key)
+    renamingTools.delete(tool.id)
   }
 })
 
@@ -487,7 +589,7 @@ ipcMain.handle('profiles:update-settings', async (event, toolId, profileId, sett
     await hydrateSharedProfileData(tool, { ...previous, settings: normalizeProfileSettings(settings) }, SYSTEM_ROOT)
     const profile = await profileStore.updateSettings(tool.id, profileId, settings)
     writeProfileDescriptor(tool, profile)
-    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) } }
+    return { ok: true, profile: { ...profile, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile)) } }
   } catch (error) {
     return { ok: false, error: String(error.message || error) }
   } finally {
@@ -500,7 +602,7 @@ ipcMain.handle('profiles:delete', async (event, toolId, profileId) => {
   if (!tool) return { ok: false, error: 'Tool not found' }
   if (profileId === DEFAULT_PROFILE_ID) return { ok: false, error: 'The Default profile cannot be deleted' }
   if (profileHasActiveSession(tool.id, profileId)) return { ok: false, error: 'Close this profile before deleting it' }
-  if (installJobs.has(profileInstallKey(tool.id, profileId))) return { ok: false, error: 'Cancel the profile installation before deleting it' }
+  if (installJobs.has(tool.id)) return { ok: false, error: 'Cancel the CLI installation before deleting this profile' }
   const key = profileInstallKey(tool.id, profileId)
   editingProfiles.add(key)
   let source
@@ -508,13 +610,14 @@ ipcMain.handle('profiles:delete', async (event, toolId, profileId) => {
   try {
     const profile = await profileStore.get(tool.id, profileId)
     if (!profile) return { ok: false, error: 'Profile not found' }
-    source = profileDir(tool, profile.id, SYSTEM_ROOT)
-    destination = path.join(SYSTEM_ROOT, '_profiles', 'trash', tool.id, `${profile.id}-${Date.now()}`)
+    source = profileDir(tool, profile, SYSTEM_ROOT)
+    destination = path.join(SYSTEM_ROOT, '_profiles', 'trash', tool.id, `${profile.name}-${Date.now()}`)
     if (fs.existsSync(source)) {
       await fs.promises.mkdir(path.dirname(destination), { recursive: true })
       await fs.promises.rename(source, destination)
     }
     await profileStore.delete(tool.id, profile.id)
+    installHistory.delete(key)
     return { ok: true, deletedProfile: profile, recoverablePath: destination }
   } catch (error) {
     if (source && destination && fs.existsSync(destination) && !fs.existsSync(source)) {
@@ -573,26 +676,28 @@ ipcMain.on('win:set-bounds', (event, requestedBounds) => {
 ipcMain.handle('tool:open-folder', async (event, id, kind = 'profile', profileId = DEFAULT_PROFILE_ID) => {
   const tool = findTool(id)
   if (!tool) return { ok: false, error: 'Tool not found' }
-  loadInstallHistory()
-  const logPath = installHistory.get(profileInstallKey(id, profileId))
+  await loadInstallHistory()
+  const profile = await profileStore.get(tool.id, profileId)
+  const logPath = installHistory.get(profileInstallKey(id, profileId)) || latestInstallLogForTool(id)
   if (kind === 'log' && !logPath) return { ok: false, error: 'No installation log is available in this session' }
-  if (kind === 'profile' && !await profileStore.get(tool.id, profileId)) {
+  if (kind === 'profile' && !profile) {
     return { ok: false, error: 'Profile not found' }
   }
   const target = kind === 'log'
     ? path.dirname(logPath)
-    : prepareProfileDirectories(tool, profileId)
+    : prepareProfileDirectories(tool, profile)
   if (!fs.existsSync(target)) return { ok: false, error: 'Folder not found' }
   const error = await shell.openPath(target)
   return error ? { ok: false, error } : { ok: true }
 })
 
-ipcMain.handle('tool:check', (event, id, profileId = DEFAULT_PROFILE_ID) => {
+ipcMain.handle('tool:check', async (event, id, profileId = DEFAULT_PROFILE_ID) => {
   const tool = findTool(id)
   if (!tool) return { installed: false, error: 'Tool not found' }
   try { validateProfileId(profileId) } catch (error) { return { installed: false, error: error.message } }
-
-  const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profileId)
+  const profile = await profileStore.get(tool.id, profileId)
+  if (!profile) return { installed: false, error: 'Profile not found' }
+  const executable = resolveLocalExecutable(tool, SYSTEM_ROOT, profile)
   return {
     installed: Boolean(executable),
     isLocal: Boolean(executable),
@@ -601,9 +706,9 @@ ipcMain.handle('tool:check', (event, id, profileId = DEFAULT_PROFILE_ID) => {
   }
 })
 
-async function readProfileVersion(tool, profileId, fresh = false) {
+async function readProfileVersion(tool, profile, fresh = false) {
   if (tool.installer?.type !== 'npm') await consoleGuard.ready()
-  return installedVersion(tool, SYSTEM_ROOT, profileId, {
+  return installedVersion(tool, SYSTEM_ROOT, profile, {
     fresh, watch: (pid) => consoleGuard.watch(pid), unwatch: (pid) => consoleGuard.unwatch(pid)
   })
 }
@@ -615,8 +720,8 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
   try { profile = await profileStore.get(tool.id, profileId) } catch (error) { return { ok: false, error: error.message } }
   if (!profile) return { ok: false, error: 'Profile not found' }
   if (quitting) return { ok: false, busy: true, error: 'OmniShell is closing' }
-  const key = profileInstallKey(tool.id, profile.id)
-  if (profileHasActiveSession(tool.id, profile.id)) return { ok: false, busy: true, error: 'Close this profile before updating it' }
+  const key = tool.id
+  if (toolHasActiveSession(tool.id)) return { ok: false, busy: true, error: 'Close all profiles of this CLI before updating it' }
   if (!tool.installer) return { ok: false, manual: true, error: 'This tool requires manual installation' }
   const existing = installJobs.get(key)
   if (existing) {
@@ -626,7 +731,7 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
   }
   let reporter
   try {
-    reporter = createInstallReporter({ ...tool, id: installLogId(tool.id, profile.id), name: `${tool.name} / ${profile.name}` }, SYSTEM_ROOT)
+    reporter = createInstallReporter({ ...tool, name: `${tool.name} / ${profile.name}` }, profileDir(tool, profile, SYSTEM_ROOT))
   } catch (error) { return { ok: false, error: `Could not create installer log: ${error.message}` } }
   const job = {
     key, toolId: tool.id, profileId: profile.id, proc: null, reporter,
@@ -635,7 +740,7 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
     cancelled: false, settled: false, pendingProgress: null, progressTimer: null, lastProgressSignature: ''
   }
   installJobs.set(key, job)
-  installHistory.set(key, reporter.logPath)
+  installHistory.set(profileInstallKey(tool.id, profile.id), reporter.logPath)
   queueInstallProgress(job, true)
   const heartbeat = setInterval(() => {
     if (job.settled) return
@@ -650,18 +755,18 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
   job.completion = (async () => {
     let result
     try {
-      const before = await readProfileVersion(tool, profile.id)
+      const before = await readProfileVersion(tool, profile)
       const release = knownRelease || await releaseResolver.resolve(tool, true)
       if (job.cancelled || quitting) throw new Error('Installation cancelled.')
       job.percent = 3
       job.lastLine = before ? `Updating ${tool.name}: ${before} → ${release.version}` : `Installing ${tool.name} ${release.version}`
       reporter.feed('info', `${job.lastLine}\n`)
       queueInstallProgress(job, true)
-      const plan = createInstallPlan(tool, __dirname, SYSTEM_ROOT, profile.id, release.version)
+      const plan = createInstallPlan(tool, __dirname, SYSTEM_ROOT, profile, release.version)
       if (!plan) throw new Error('No installer is configured for this tool')
       const code = await new Promise((resolve, reject) => {
         const proc = spawn(plan.command, plan.args, {
-          cwd: plan.cwd, env: createInstallEnvironment(tool, process.env, SYSTEM_ROOT, profile.id), windowsHide: true
+          cwd: plan.cwd, env: createInstallEnvironment(tool, process.env, SYSTEM_ROOT, profile), windowsHide: true
         })
         job.proc = proc
         const feed = (stream, chunk) => {
@@ -677,11 +782,11 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
       })
       if (job.cancelled || quitting) throw new Error(job.failure || 'Installation cancelled.')
       if (code !== 0) throw new Error(reporter.failure(`Installer exited with code ${code}`))
-      if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)) throw new Error('The local executable was not found after installation')
+      if (!resolveLocalExecutable(tool, SYSTEM_ROOT, profile)) throw new Error('The local executable was not found after installation')
       job.lastLine = 'Checking installed version...'
       job.percent = Math.max(job.percent, 96)
       queueInstallProgress(job, true)
-      const actual = await readProfileVersion(tool, profile.id, true)
+      const actual = await readProfileVersion(tool, profile, true)
       if (!actual || newerVersion(release.version, actual)) {
         throw new Error(`Expected ${release.version}, but the installed CLI reports ${actual || 'an unknown version'}`)
       }
@@ -697,9 +802,10 @@ async function installTool(senderId, id, profileId = DEFAULT_PROFILE_ID, knownRe
       clearInterval(heartbeat)
       clearTimeout(job.progressTimer)
       job.settled = true
-      installJobs.delete(key)
       reporter.finish(result?.ok ? 'success' : (result?.cancelled ? 'cancelled' : 'failed'))
-      broadcastInstall(job, 'install:done', { toolId: tool.id, profileId: profile.id, ...result, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)), logAvailable: true })
+      await cleanupInstallArtifacts(tool, SYSTEM_ROOT).catch(console.error)
+      installJobs.delete(key)
+      broadcastInstall(job, 'install:done', { toolId: tool.id, profileId: profile.id, ...result, installed: Boolean(resolveLocalExecutable(tool, SYSTEM_ROOT, profile)), logAvailable: true })
     }
     return result
   })()
@@ -710,7 +816,7 @@ ipcMain.handle('tool:install', (event, id, profileId) => installTool(event.sende
 
 ipcMain.handle('tool:cancel-install', (event, id, profileId = DEFAULT_PROFILE_ID) => {
   let jobKey
-  try { jobKey = profileInstallKey(id, profileId) } catch (error) { return { ok: false, error: error.message } }
+  try { validateProfileId(profileId); jobKey = id } catch (error) { return { ok: false, error: error.message } }
   const job = installJobs.get(jobKey)
   if (!job) return { ok: false, error: 'No active installer was found' }
   job.cancelled = true
@@ -746,8 +852,8 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     if (!profile) return { ok: false, error: 'Profile not found' }
     await Promise.all([...closingProfiles].filter(([key]) => key.startsWith(`${tool.id}\u0000`)).map(([, finished]) => finished))
     if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
-    if (editingProfiles.has(profileInstallKey(tool.id, profile.id))) return { ok: false, error: 'Wait for this profile change to finish' }
-    if (installJobs.has(profileInstallKey(tool.id, profile.id))) return { ok: false, error: 'Wait for this profile installation to finish' }
+    if (renamingTools.has(tool.id) || editingProfiles.has(profileInstallKey(tool.id, profile.id))) return { ok: false, error: 'Wait for this profile change to finish' }
+    if (installJobs.has(tool.id)) return { ok: false, error: 'Wait for this CLI installation to finish' }
     const busyProfiles = [
       ...ptyRegistry.entries().map(([, session]) => session),
       ...[...terminalLaunches.values()].filter((candidate) => candidate !== launch && candidate.profile)
@@ -757,8 +863,8 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     }
     launch.profile = profile
 
-    prepareProfileDirectories(tool, profile.id)
-    const cwd = profileWorkspaceDir(tool, profile.id)
+    prepareProfileDirectories(tool, profile)
+    const cwd = profileWorkspaceDir(tool, profile)
     await hydrateSharedProfileData(tool, profile, SYSTEM_ROOT)
     if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
 
@@ -766,19 +872,19 @@ ipcMain.handle('terminal:start', async (event, id, profileId = DEFAULT_PROFILE_I
     const startRows = Number.isInteger(rows) ? Math.max(6, Math.min(rows, 500)) : 28
     const startPixelWidth = Number.isInteger(pixelWidth) ? Math.max(1, Math.min(pixelWidth, 16384)) : startCols * 9
     const startPixelHeight = Number.isInteger(pixelHeight) ? Math.max(1, Math.min(pixelHeight, 16384)) : startRows * 18
-    const launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile.id)
-    if (!launchExe) return { ok: false, error: 'The isolated local installation was not found' }
+    const launchExe = resolveLocalExecutable(tool, SYSTEM_ROOT, profile)
+    if (!launchExe) return { ok: false, error: 'The shared CLI installation was not found' }
 
     await consoleGuard.ready()
     if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
     const pty = require('node-pty')
-    const basePtyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile.id)
-    const launchPolicy = await prepareProfileLaunch(tool, profile, profileDir(tool, profile.id, SYSTEM_ROOT), basePtyEnv)
+    const basePtyEnv = createIsolatedEnvironment(tool, process.env, SYSTEM_ROOT, profile)
+    const launchPolicy = await prepareProfileLaunch(tool, profile, profileDir(tool, profile, SYSTEM_ROOT), basePtyEnv)
     if (!isCurrentLaunch()) return { ok: false, error: 'Launch cancelled' }
     const ptyEnv = launchPolicy.env
     ptyEnv.PWD = cwd
     ptyEnv.INIT_CWD = cwd
-    ptyEnv.GIT_CEILING_DIRECTORIES = path.join(app.getPath('userData'), 'workspaces')
+    ptyEnv.GIT_CEILING_DIRECTORIES = cwd
     ptyEnv.OMNISHELL_PROFILE_WORKSPACE = cwd
     const launchArgs = launchPolicy.args
 
@@ -904,6 +1010,7 @@ if (!hasSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
+    if (!startupReady) return
     if (windows.size === 0) {
       createWindow()
       return
@@ -917,21 +1024,19 @@ if (!hasSingleInstanceLock) {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return
   prepareAllTools()
-  profileStore.ensureTools(TOOLS.map((tool) => tool.id))
-    .then((profilesByTool) => {
-      for (const tool of TOOLS) {
-        for (const profile of profilesByTool[tool.id] || []) writeProfileDescriptor(tool, profile)
-      }
-    })
-    .catch((error) => {
-      console.error(`[PROFILE STORE] ${String(error.message || error)}`)
-    })
+  await profileStore.load()
+  await recoverPendingRenames(profileStore, TOOLS, SYSTEM_ROOT)
+  await migrateProfileLayout(profileStore, TOOLS, SYSTEM_ROOT, app.getPath('userData'))
+  await migrateSharedInstallations(profileStore, TOOLS, SYSTEM_ROOT)
+  await migrateProfileDocuments(profileStore, TOOLS, SYSTEM_ROOT)
+  for (const tool of TOOLS) await migrateLegacySharedMcp(tool, SYSTEM_ROOT)
+  await loadInstallHistory()
+  startupReady = true
   createWindow()
   createTray()
-  setImmediate(loadInstallHistory)
   consoleGuard.ready()
   if (process.env.OMNISHELL_DISABLE_AUTO_UPDATE !== '1') autoUpdater.start().catch(console.error)
 
@@ -954,6 +1059,10 @@ app.whenReady().then(() => {
       }
     }
   })
+}).catch((error) => {
+  console.error(`[PROFILE MIGRATION] ${String(error.stack || error)}`)
+  dialog.showErrorBox('OmniShell profile migration failed', `${String(error.message || error)}\n\nYour existing profile files were not replaced. Close OmniShell and resolve the folder conflict before trying again.`)
+  app.quit()
 })
 
 app.on('before-quit', (event) => {

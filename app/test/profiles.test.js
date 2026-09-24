@@ -5,9 +5,10 @@ const path = require('node:path')
 const os = require('node:os')
 const { EventEmitter } = require('node:events')
 const { DatabaseSync } = require('node:sqlite')
+const toml = require('@iarna/toml')
 const { ProfileStore } = require('../lib/profile-store')
 const { prepareProfileLaunch } = require('../lib/profile-launch')
-const { hydrateSharedProfileData, persistSharedProfileData } = require('../lib/profile-sharing')
+const { hydrateSharedProfileData, migrateLegacySharedMcp, persistSharedProfileData, sharingCapabilities } = require('../lib/profile-sharing')
 const { findTool, profileDir } = require('../lib/tooling')
 const { terminateProcessTree } = require('../lib/install-runtime')
 
@@ -96,10 +97,10 @@ test('malformed Amp config is not replaced with an empty permissive config', asy
 test('sharing copies committed SQLite WAL data and never transfers credentials', async (t) => {
   const root = await temporaryRoot(t)
   const tool = findTool('codex')
-  const first = { id: 'default', settings: { sharedSessions: true } }
-  const second = { id: `p_${'a'.repeat(32)}`, settings: { sharedSessions: true } }
-  const firstRoot = profileDir(tool, first.id, root)
-  const secondRoot = profileDir(tool, second.id, root)
+  const first = { id: 'default', name: 'Default', settings: { sharedSessions: true } }
+  const second = { id: `p_${'a'.repeat(32)}`, name: 'Second', settings: { sharedSessions: true } }
+  const firstRoot = profileDir(tool, first, root)
+  const secondRoot = profileDir(tool, second, root)
   const file = await write(firstRoot, '.codex/state_5.sqlite', '')
   const db = new DatabaseSync(file)
   try {
@@ -126,14 +127,105 @@ test('sharing copies committed SQLite WAL data and never transfers credentials',
 test('sharing does not follow linked session folders outside the profile', async (t) => {
   const root = await temporaryRoot(t)
   const tool = findTool('codex')
-  const profile = { id: 'default', settings: { sharedSessions: true } }
+  const profile = { id: 'default', name: 'Default', settings: { sharedSessions: true } }
   const outside = path.join(root, 'unshared')
   await write(outside, 'private.json', 'secret')
-  const sessions = path.join(profileDir(tool, profile.id, root), '.codex/sessions')
+  const sessions = path.join(profileDir(tool, profile, root), '.codex/sessions')
   await fs.mkdir(path.dirname(sessions), { recursive: true })
   await fs.symlink(outside, sessions, process.platform === 'win32' ? 'junction' : 'dir')
   await assert.rejects(persistSharedProfileData(tool, profile, root), /links/)
   assert.equal(await fs.readFile(path.join(outside, 'private.json'), 'utf8'), 'secret')
+})
+
+test('skills and MCP remain private until their separate controls are enabled', async (t) => {
+  const root = await temporaryRoot(t)
+  const tool = findTool('codex')
+  const first = { id: 'default', name: 'Default', settings: { sharedConfig: true } }
+  const second = { id: `p_${'b'.repeat(32)}`, name: 'Second', settings: { sharedConfig: true } }
+  const firstRoot = profileDir(tool, first, root)
+  const secondRoot = profileDir(tool, second, root)
+  await write(firstRoot, '.codex/skills/private/SKILL.md', 'private skill')
+  await write(firstRoot, '.codex/config.toml', '[mcp_servers.private]\ncommand = "secret"\n[model_provider]\nname = "first"\n')
+  await write(secondRoot, '.codex/config.toml', '[mcp_servers.second]\ncommand = "second"\n')
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  assert.equal(toml.parse(await fs.readFile(path.join(secondRoot, '.codex/config.toml'), 'utf8')).mcp_servers.second.command, 'second')
+  assert.equal(toml.parse(await fs.readFile(path.join(secondRoot, '.codex/config.toml'), 'utf8')).model_provider.name, 'first')
+  await assert.rejects(fs.access(path.join(secondRoot, '.codex/skills/private/SKILL.md')), { code: 'ENOENT' })
+  assert.equal(toml.parse(await fs.readFile(path.join(root, 'Codex/_shared/sharedConfig/.codex/config.toml'), 'utf8')).mcp_servers, undefined)
+  first.settings.sharedSkills = true
+  first.settings.sharedMcp = true
+  second.settings.sharedSkills = true
+  second.settings.sharedMcp = true
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  assert.equal(await fs.readFile(path.join(secondRoot, '.codex/skills/private/SKILL.md'), 'utf8'), 'private skill')
+  assert.equal(toml.parse(await fs.readFile(path.join(secondRoot, '.codex/config.toml'), 'utf8')).mcp_servers.private.command, 'secret')
+  assert.equal(toml.parse(await fs.readFile(path.join(secondRoot, '.codex/config.toml'), 'utf8')).model_provider.name, 'first')
+})
+
+test('Qwen JSONC MCP sharing keeps other settings separate', async (t) => {
+  const root = await temporaryRoot(t)
+  const tool = findTool('qwen')
+  const first = { id: 'default', name: 'Default', settings: { sharedMcp: true } }
+  const second = { id: `p_${'c'.repeat(32)}`, name: 'Second', settings: { sharedMcp: true } }
+  await write(profileDir(tool, first, root), '.qwen/settings.json', '{ // comment\n "theme": "light", "mcpServers": {"local": {"command":"one"}} }')
+  await write(profileDir(tool, second, root), '.qwen/settings.json', '{"theme":"dark"}')
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  const secondConfig = JSON.parse(await fs.readFile(path.join(profileDir(tool, second, root), '.qwen/settings.json'), 'utf8'))
+  assert.equal(secondConfig.theme, 'dark')
+  assert.equal(secondConfig.mcpServers.local.command, 'one')
+})
+
+test('old Shared Config MCP entries are removed from the live shared copy with a recoverable backup', async (t) => {
+  const root = await temporaryRoot(t)
+  const tool = findTool('codex')
+  const file = await write(root, 'Codex/_shared/sharedConfig/.codex/config.toml', '[mcp_servers.secret]\ncommand = "private"\n[model_provider]\nname = "example"\n')
+  await migrateLegacySharedMcp(tool, root)
+  const live = toml.parse(await fs.readFile(file, 'utf8'))
+  assert.equal(live.mcp_servers, undefined)
+  assert.equal(live.model_provider.name, 'example')
+  const backups = await fs.readdir(path.join(root, '_profiles/trash/legacy-shared-mcp/codex'))
+  assert.equal(backups.length, 1)
+  assert.match(await fs.readFile(path.join(root, '_profiles/trash/legacy-shared-mcp/codex', backups[0]), 'utf8'), /private/)
+  await migrateLegacySharedMcp(tool, root)
+  assert.equal((await fs.readdir(path.join(root, '_profiles/trash/legacy-shared-mcp/codex'))).length, 1)
+})
+
+test('Goose YAML keeps private extensions out of Shared Config and shares them only with Shared MCP', async (t) => {
+  const root = await temporaryRoot(t)
+  const tool = findTool('goose')
+  const first = { id: 'default', name: 'Default', settings: { sharedConfig: true } }
+  const second = { id: `p_${'d'.repeat(32)}`, name: 'Second', settings: { sharedConfig: true } }
+  const relative = 'AppData/Roaming/Block/goose/config/config.yaml'
+  await write(profileDir(tool, first, root), relative, 'provider: example\nextensions:\n  private:\n    type: stdio\n    cmd: private\n')
+  await write(profileDir(tool, second, root), relative, 'extensions:\n  local:\n    type: stdio\n    cmd: local\n')
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  const privateConfig = await fs.readFile(path.join(profileDir(tool, second, root), relative), 'utf8')
+  assert.match(privateConfig, /local/)
+  assert.doesNotMatch(privateConfig, /private/)
+  assert.match(privateConfig, /provider: example/)
+  first.settings.sharedMcp = true
+  second.settings.sharedMcp = true
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  assert.match(await fs.readFile(path.join(profileDir(tool, second, root), relative), 'utf8'), /private/)
+})
+
+test('direct MCP files and tool capabilities are isolated by CLI', async (t) => {
+  const root = await temporaryRoot(t)
+  const tool = findTool('cursor-agent')
+  const first = { id: 'default', name: 'Default', settings: { sharedMcp: true } }
+  const second = { id: `p_${'e'.repeat(32)}`, name: 'Second', settings: { sharedMcp: true } }
+  await write(profileDir(tool, first, root), '.cursor/mcp.json', '{"mcpServers":{"one":{"command":"one"}}}')
+  await persistSharedProfileData(tool, first, root)
+  await hydrateSharedProfileData(tool, second, root)
+  assert.equal(JSON.parse(await fs.readFile(path.join(profileDir(tool, second, root), '.cursor/mcp.json'), 'utf8')).mcpServers.one.command, 'one')
+  assert.equal(sharingCapabilities('aider').sharedMcp, false)
+  assert.equal(sharingCapabilities('aider').sharedSkills, false)
+  assert.equal(sharingCapabilities('cursor-agent').sharedSkills, true)
 })
 
 test('missing taskkill falls back to the PTY kill without an unhandled error', () => {

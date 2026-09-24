@@ -9,9 +9,9 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-OmniShell is an open-source Windows desktop app for running AI coding CLIs. Choose a tool, create a profile, and sign in inside its terminal. You can keep personal and work accounts in separate local installations and switch between them from one interface.
+OmniShell is an open-source Windows desktop app for running AI coding CLIs. Choose a tool, create a profile, and sign in inside its terminal. You can keep personal and work accounts in separate profiles and switch between them from one interface.
 
-The home screen places a focused vertical tool list on the left and keeps the ASCII wordmark on the right. The selected CLI appears at full size, its neighbors remain close, and distant entries recede without leaving the keyboard flow. Each custom profile has its own CLI runtime, credentials, configuration, and workspace. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
+The home screen places a focused vertical tool list on the left and keeps the ASCII wordmark on the right. The selected CLI appears at full size, its neighbors remain close, and distant entries recede without leaving the keyboard flow. Each tool has one CLI installation; its profiles have separate credentials, configuration, and workspaces. Terminal sessions use Windows ConPTY and xterm.js, with support for keyboard navigation, text selection, and clipboard shortcuts.
 
 ## Get started
 
@@ -25,7 +25,7 @@ The portable package is around 300–400 MB. It uses store compression to reduce
 
 ## Profiles
 
-Create a named profile for each account or workspace you want to keep separate. Each profile gets an independent CLI installation. Rename it without changing its storage path, or delete a custom profile by confirming a move to recoverable trash.
+Create a named profile for each account or workspace you want to keep separate. Profiles of the same tool use one CLI installation and version. Each profile folder uses its name and moves when you rename it. Delete a custom profile by confirming a move to recoverable trash.
 
 In **Settings**, you can choose:
 
@@ -61,7 +61,7 @@ OmniShell excludes dedicated authentication files from sharing. Some tools store
 | [Qwen Code](https://github.com/QwenLM/qwen-code) | `@qwen-code/qwen-code` |
 | [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | `@moonshot-ai/kimi-code` |
 
-OmniShell resolves commands from the selected profile's runtime directory. Installers report progress in the interface and keep a local transcript for troubleshooting. An installation is marked ready only after OmniShell finds its expected executable.
+OmniShell resolves commands from the tool's own directory. Installers report progress in the interface and keep a local transcript for troubleshooting. An installation is marked ready only after OmniShell finds its expected executable. Updates wait until all profiles of that tool are closed.
 
 ## Keyboard and window controls
 
@@ -71,7 +71,7 @@ OmniShell resolves commands from the selected profile's runtime directory. Insta
 | `Enter` | Confirm a choice or open the selected profile |
 | `N` / `R` in the profile picker | Create or rename a profile |
 | `S` in the profile picker | Open profile settings |
-| `I` in the profile picker | Install the selected profile's CLI |
+| `I` in the profile picker | Install or update the CLI shared by this tool's profiles |
 | `U` in the tool grid | Update or reinstall the selected CLI |
 | `Ctrl+C` with selected text | Copy the selection |
 | `Ctrl+V` or `Ctrl+Shift+V` | Paste into the terminal |
@@ -86,21 +86,31 @@ Source builds use the repository's `system/` directory. Packaged builds use `%AP
 
 ```text
 system/
-├── _install/logs/              Installer transcripts
 ├── _profiles/
 │   ├── profiles.json          Profile names and settings
-│   └── trash/                 Recoverably deleted profiles
+│   └── trash/                 Recoverably deleted profiles and old installations
 └── Codex/                     One directory per CLI family
-    ├── .codex/                Default profile data
-    ├── node_modules/          Default CLI installation
-    ├── _shared/               Opt-in shared data
-    └── profiles/p_<uuid>/
-        ├── profile.json       Name, settings, and layout
-        ├── runtime/           Independent CLI installation
-        └── .codex/            Independent profile data
+    ├── node_modules/          Example CLI package files
+    ├── package.json           Example installation manifest
+    ├── _shared/               Opt-in sessions, models, config, skills and MCP
+    └── Profiles/
+        ├── Default/
+        │   ├── Default-Codex.Toml  Profile identity and sharing settings
+        │   ├── workspace/     Starting workspace
+        │   ├── logs/          Installer transcripts
+        │   └── .codex/        CLI data and credentials
+        └── Work/
+            ├── Work-Codex.Toml
+            ├── workspace/
+            ├── logs/
+            └── .codex/        Work's private CLI config, skills, MCP and login
 ```
 
-Profiles also receive separate HOME, AppData, XDG, and temporary directories. They start in neutral workspaces under `%APPDATA%\OmniShell\workspaces`, outside the application source tree. Deleting a custom profile moves its data to trash; the Default profile cannot be deleted.
+Each CLI has one installation in its tool directory. Profiles receive separate HOME, AppData, XDG, and temporary directories inside their named folder, and start in their own `workspace/`. The `(profile name)-(CLI name).Toml` file records profile identity and OmniShell settings. CLI configuration keeps its native format, such as `.codex/config.toml`; the profile TOML is not passed to the CLI. OmniShell reads TOML setting edits at the next startup. Renaming a profile also renames its folder and TOML file. It updates exact old-folder paths in recognized CLI configuration files belonging to that tool's profiles and shared settings; project files, session databases, and logs are not rewritten. A failed rename restores the previous name and configuration, and an interrupted rename is completed or rolled back at startup. Deleting a custom profile moves its data, workspace, and logs to trash while keeping the shared CLI installation. The Default profile cannot be deleted. Profile names must be valid Windows folder names.
+
+**Sharing is opt-in per CLI and profile.** Shared Sessions, Models, Config, Skills, and MCP are separate settings; all are off by default. Private skills and MCP servers remain in the CLI's own profile-local files. For example, Codex uses `.codex/skills/` and the `mcp_servers` entries in `.codex/config.toml`. Shared Config excludes MCP entries, so enabling it alone does not share MCP servers. When Shared Skills or Shared MCP is enabled, OmniShell copies that whole category through the tool's `_shared/` directory when a profile starts and exits. The picker shows `N/A` for a CLI without a verified sharing adapter; Aider currently has no Skills or MCP adapter. Each category is shared only among profiles of the same CLI. A CLI installation remains shared independently of these settings.
+
+On upgrade from separate profile installations, OmniShell moves one installed copy to the tool directory and preserves the other copies under `_profiles/trash/legacy-runtimes/` for recovery. Old `profile.json` files become profile TOML files. Previously shared MCP entries found inside Shared Config are removed from the live shared copy and backed up under `_profiles/trash/legacy-shared-mcp/`; the individual profile's MCP entries remain. Archived copies still occupy disk space until removed.
 
 ## Development
 

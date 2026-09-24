@@ -2,7 +2,7 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
-const { profileRuntimeDir, resolveLocalExecutable, createIsolatedEnvironment } = require('./tooling')
+const { DEFAULT_PROFILE, profileRuntimeDir, resolveLocalExecutable, createIsolatedEnvironment } = require('./tooling')
 const { terminateProcessTree } = require('./install-runtime')
 
 const CHECK_INTERVAL = 4 * 60 * 60 * 1000
@@ -42,14 +42,14 @@ async function writeJson(file, value) {
   } finally { await fs.rm(partial, { force: true }).catch(() => {}) }
 }
 
-async function installedVersion(tool, systemRoot, profileId = 'default', options = {}) {
-  const root = profileRuntimeDir(tool, profileId, systemRoot)
+async function installedVersion(tool, systemRoot, profile = DEFAULT_PROFILE, options = {}) {
+  const root = profileRuntimeDir(tool, profile, systemRoot)
   if (tool.installer?.type === 'npm') {
     try {
       return JSON.parse(await fs.readFile(path.join(root, 'node_modules', tool.installer.package, 'package.json'), 'utf8')).version || null
     } catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
-  const executable = resolveLocalExecutable(tool, systemRoot, profileId)
+  const executable = resolveLocalExecutable(tool, systemRoot, profile)
   if (!executable) return null
   const stat = await fs.stat(executable)
   if (!options.fresh) {
@@ -63,7 +63,7 @@ async function installedVersion(tool, systemRoot, profileId = 'default', options
     const wrapped = /\.(?:cmd|bat)$/i.test(executable)
     const proc = spawn(wrapped ? (process.env.ComSpec || 'cmd.exe') : executable,
       wrapped ? ['/d', '/s', '/c', 'call', executable, '--version'] : ['--version'],
-      { cwd: root, env: createIsolatedEnvironment(tool, process.env, systemRoot, profileId), windowsHide: true })
+      { cwd: root, env: createIsolatedEnvironment(tool, process.env, systemRoot, profile), windowsHide: true })
     options.watch?.(proc.pid)
     const finish = (error, result) => {
       if (settled) return
@@ -150,29 +150,27 @@ class AutoUpdater {
       for (const tool of this.tools) {
         if (this.stopped) break
         const profiles = await this.listProfiles(tool.id)
-        for (const profile of profiles) {
-          if (this.stopped) break
-          if (!this.isInstalled(tool, this.systemRoot, profile.id) || this.isBusy(tool.id, profile.id)) continue
-          const key = `${tool.id}:${profile.id}`
-          const previous = this.state[key]
-          if (previous && this.now() - previous.checkedAt < (previous.error ? 15 * 60 * 1000 : CHECK_INTERVAL)) continue
-          try {
-            const current = await this.readVersion(tool, this.systemRoot, profile.id)
-            const release = await this.resolver.resolve(tool)
-            if (this.stopped || this.isBusy(tool.id, profile.id)) continue
-            if (current && newerVersion(release.version, current)) {
-              const result = await this.install(tool.id, profile.id, release)
-              if (!result?.ok) {
-                if (result?.busy) continue
-                throw new Error(result?.error || 'Automatic update did not complete')
-              }
+        const profile = profiles.find((candidate) => candidate.id === 'default') || profiles[0]
+        if (!profile || !this.isInstalled(tool, this.systemRoot, profile) || this.isBusy(tool.id)) continue
+        const key = tool.id
+        const previous = this.state[key]
+        if (previous && this.now() - previous.checkedAt < (previous.error ? 15 * 60 * 1000 : CHECK_INTERVAL)) continue
+        try {
+          const current = await this.readVersion(tool, this.systemRoot, profile)
+          const release = await this.resolver.resolve(tool)
+          if (this.stopped || this.isBusy(tool.id)) continue
+          if (current && newerVersion(release.version, current)) {
+            const result = await this.install(tool.id, profile.id, release)
+            if (!result?.ok) {
+              if (result?.busy) continue
+              throw new Error(result?.error || 'Automatic update did not complete')
             }
-            this.state[key] = { checkedAt: this.now(), version: release.version }
-          } catch (error) {
-            this.state[key] = { checkedAt: this.now(), error: String(error.message || error) }
           }
-          await writeJson(this.file, this.state)
+          this.state[key] = { checkedAt: this.now(), version: release.version }
+        } catch (error) {
+          this.state[key] = { checkedAt: this.now(), error: String(error.message || error) }
         }
+        await writeJson(this.file, this.state)
       }
     } finally {
       this.running = false

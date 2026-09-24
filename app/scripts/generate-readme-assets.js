@@ -63,7 +63,12 @@ async function poster(name, height, body) {
   }
   try { require('../main') } finally { Module._load = load }
   await app.whenReady()
-  const win = BrowserWindow.getAllWindows()[0]
+  let win
+  for (let attempt = 0; attempt < 100 && !win; attempt += 1) {
+    win = BrowserWindow.getAllWindows()[0]
+    if (!win) await delay(50)
+  }
+  if (!win) throw new Error('OmniShell window did not open')
   const js = (code) => win.webContents.executeJavaScript(code)
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (await js('typeof tools !== "undefined" && tools.length && bootScreen.classList.contains("hidden")').catch(() => false)) break
@@ -79,12 +84,10 @@ async function poster(name, height, body) {
   const personal = await js('window.api.createProfile("codex", "Personal", {})')
   const work = await js('window.api.createProfile("codex", "Work", {sharedSessions: true, sharedModels: true})')
   if (!personal.ok || !work.ok) throw new Error('Could not create demonstration profiles')
-  // Empty command wrappers mark sample profiles as installed; no CLI is executed.
-  for (const id of ['default', personal.profile.id, work.profile.id]) {
-    const base = id === 'default' ? path.join(scratch, 'system/Codex') : path.join(scratch, 'system/Codex/profiles', id, 'runtime')
-    await fs.mkdir(path.join(base, 'node_modules/.bin'), { recursive: true })
-    await fs.writeFile(path.join(base, 'node_modules/.bin/codex.cmd'), '@echo off\r\n')
-  }
+  // One empty command wrapper marks Codex as installed for every sample profile.
+  const base = path.join(scratch, 'system', 'Codex')
+  await fs.mkdir(path.join(base, 'node_modules/.bin'), { recursive: true })
+  await fs.writeFile(path.join(base, 'node_modules/.bin/codex.cmd'), '@echo off\r\n')
   win.webContents.setZoomFactor(1.4)
   await js(`showView('terminal'); initTerminal(); applyTerminalSurface(getTool('codex')); openProfilePicker(getTool('codex'), ${JSON.stringify(work.profile.id)})`)
   await delay(250)
