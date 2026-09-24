@@ -24,7 +24,7 @@
     "check": "node --check main.js && node --check preload.js && node --check renderer/renderer.js && node --check lib/tooling.js && node --check lib/profile-store.js && node --check lib/profile-layout.js && node --check lib/profile-path-references.js && node --check lib/shared-install-layout.js && node --check lib/profile-document.js && node --check lib/profile-sharing.js && node --check lib/profile-launch.js && node --check lib/install-runtime.js && node --check lib/pty-registry.js && node --check lib/terminal-queries.js && node --check lib/tool-updates.js && node --check lib/console-window-guard.js && node --check lib/window-transitions.js && node --check renderer/terminal-surface.js"
   },
   "devDependencies": {
-    "electron": "^43.4.1",
+    "electron": "^44.4.3",
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
